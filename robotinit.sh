@@ -75,7 +75,6 @@ step "更新系统"
 
 step "安装基础下载、编译和 Python 工具"
 "${APT_GET[@]}" install -y \
-  git \
   curl \
   wget \
   unzip \
