@@ -10,11 +10,11 @@ CHECK_ONLY=0
 
 usage() {
   cat <<'EOF'
-用法：sudo ./clean.sh [选项]
+用法：sudo ./sanitize.sh [选项]
 
 净化 Jetson 黄金母机，清理可克隆的每机状态并自动关机。
 hostname、SSH host key 和 NetworkManager 连接配置会保留，以保证目标机首次开机后可 SSH 登录；
-目标机开机后运行 init.sh 完成最终身份初始化。
+目标机开机后运行 finalize.sh 完成最终身份初始化。
 
 选项：
   --check            只执行环境和网络绑定检查，不做任何清理
@@ -103,7 +103,7 @@ confirm_cleanup() {
 
 警告：该操作会清除母机唯一状态、日志、缓存和历史，并自动关机。
 hostname、NetworkManager 连接配置、authorized_keys 和用户 SSH 私钥会保留。
-SSH host key 会临时保留，目标机首次开机后必须运行 init.sh 重建。
+SSH host key 会临时保留，目标机首次开机后必须运行 finalize.sh 重建。
 输入 CLEAN 继续：
 EOF
   read -r answer </dev/tty
