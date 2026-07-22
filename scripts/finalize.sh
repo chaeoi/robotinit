@@ -10,8 +10,8 @@ CHECK_ONLY=0
 
 usage() {
   cat <<'EOF'
-用法：sudo ./init.sh <hostname> [选项]
-      sudo ./init.sh --hostname <hostname> [选项]
+用法：sudo ./finalize.sh <hostname> [选项]
+      sudo ./finalize.sh --hostname <hostname> [选项]
 
 目标机首次开机后执行一次，设置本机 hostname，重建 machine-id 和 SSH host key，
 清理克隆残留状态，最后默认自动重启。
@@ -96,7 +96,7 @@ step() {
 on_error() {
   local exit_code=$?
   echo >&2
-  echo "初始化失败，退出码 ${exit_code}。请修复后重新运行 init.sh。" >&2
+  echo "初始化失败，退出码 ${exit_code}。请修复后重新运行 finalize.sh。" >&2
   exit "$exit_code"
 }
 

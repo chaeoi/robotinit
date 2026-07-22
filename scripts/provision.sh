@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Jetson environment installer.
+# Jetson robot environment provisioner.
 set -Eeuo pipefail
 umask 022
 
@@ -88,7 +88,7 @@ step "安装基础下载、编译和 Python 工具"
 
 for command_name in curl gpg lsb_release unzip wget; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "错误：缺少文件 5 所依赖的系统命令：${command_name}" >&2
+    echo "错误：缺少环境安装所依赖的系统命令：${command_name}" >&2
     exit 1
   fi
 done
