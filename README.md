@@ -2,7 +2,7 @@
 
 `robotinit` 是一组面向 NVIDIA Jetson AGX Orin 的部署脚本，用于完成机器人运行环境安装、黄金母机净化，以及克隆设备首次启动后的身份初始化。
 
-完整的刷机、环境配置和黄金镜像操作手册见 [项目 Wiki](https://github.com/chaeoi/robotinit/wiki)。
+完整的刷机、环境配置和黄金镜像操作手册见 [部署手册](docs/guide.md)。
 
 ## 适用环境
 
@@ -38,7 +38,7 @@ sanitize.sh        净化黄金母机并关机
 finalize.sh        为每台目标机生成独立身份
 ```
 
-刷机和镜像读写命令没有封装在脚本中，请严格按照 [Wiki](https://github.com/chaeoi/robotinit/wiki) 操作。
+刷机和镜像读写命令没有封装在脚本中，请严格按照 [部署手册](docs/guide.md) 操作。
 
 ## 脚本
 
@@ -53,6 +53,8 @@ finalize.sh        为每台目标机生成独立身份
 ```text
 robotinit/
 ├── README.md
+├── docs/
+│   └── guide.md
 └── scripts/
     ├── provision.sh
     ├── sanitize.sh
