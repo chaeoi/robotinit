@@ -27,15 +27,17 @@ robotinit/
 └── scripts/
     ├── provision.sh
     ├── sanitize.sh
+    ├── backup.sh
     └── finalize.sh
 ```
 
-三个脚本的职责：
+四个脚本的职责：
 
 | 脚本 | 执行位置 | 用途 |
 | --- | --- | --- |
 | `provision.sh` | 正常启动的 Jetson | 安装 ROS2、CAN、CUDA、TensorRT、PyTorch 等运行环境 |
 | `sanitize.sh` | 黄金母机 | 清除会被克隆的机器状态并自动关机 |
+| `backup.sh` | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整黄金镜像，并生成 MD5 |
 | `finalize.sh` | 恢复后的目标机 | 设置 hostname，重建 machine-id 和 SSH host key，然后重启 |
 
 GitHub Raw 地址使用 `main` 分支。只有文件已经提交并推送到 GitHub 后，远程设备才能通过这些地址下载最新脚本。
@@ -597,7 +599,7 @@ sudo systemctl enable --now code-server@$USER
 
 ## 四、制作黄金镜像并恢复目标机
 
-本章保持既定黄金镜像制作和恢复步骤的执行顺序。脚本统一使用 GitHub Raw 源文件地址，参数和操作顺序不变。
+本章先使用 NVIDIA 工具读取母机镜像，再使用脚本打包，并给出删除旧镜像、解包和刷写目标机的命令。在线脚本统一使用 GitHub Raw 源文件地址。
 
 ### 1. 净化黄金母机
 
@@ -681,19 +683,55 @@ Linux_for_Tegra/tools/backup_restore/images/
 
 目录中的 `nvpartitionmap.txt` 记录镜像文件、分区设备、起始扇区、大小和校验值。应完整保存整个 `images/` 目录，而不是只保存 APP 镜像。
 
-### 6. 返回指定 BSP 目录
+### 6. 使用脚本打包黄金镜像
+
+读取母机 NVMe 成功后，在刷机主机以普通用户执行一条命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
+```
+
+脚本会把完整 `images/` 打包，并生成对应 MD5。例如 2026 年 7 月 27 日第一次打包会生成：
+
+```text
+/home/ubuntu/backup/goldimage_26072701.tar
+/home/ubuntu/backup/goldimage_26072701.md5
+```
+
+文件名格式是 `goldimage_YYMMDD` 加两位序号。同一天再次打包会依次生成 `goldimage_26072702`、`goldimage_26072703`，不会覆盖已有归档。
+
+### 7. 删除旧镜像并解包
+
+下面以 `goldimage_26072701` 为例。先确认 MD5 显示 `OK`，再删除 BSP 中原有的 `images/` 并解压备份：
+
+```bash
+cd "$HOME/backup"
+
+md5sum -c goldimage_26072701.md5
+
+sudo rm -rf /home/ubuntu/Linux_for_Tegra/tools/backup_restore/images
+
+sudo tar -xf goldimage_26072701.tar \
+  -C /home/ubuntu/Linux_for_Tegra/tools/backup_restore
+```
+
+### 8. 刷写目标机 NVMe
+
+让目标 Jetson 进入 Force Recovery，确认刷机主机能够识别：
+
+```bash
+lsusb | grep -i nvidia
+```
+
+然后执行：
 
 ```bash
 cd /home/ubuntu/Linux_for_Tegra
-```
 
-原步骤使用绝对路径，确保恢复命令从保存黄金镜像的同一 BSP 目录执行。
+sudo systemctl stop udisks2.service
 
-如果备份是在其他位置完成，应保证该路径下的 `tools/backup_restore/images/` 已放入完整黄金镜像。
+sudo service nfs-kernel-server start
 
-### 7. 恢复目标机 NVMe
-
-```bash
 sudo ./tools/backup_restore/l4t_backup_restore.sh \
      --network usb0 \
      -e nvme0n1 \
@@ -701,7 +739,7 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
      jetson-agx-orin-devkit
 ```
 
-执行前，目标机必须进入 Force Recovery。恢复过程会覆盖目标机的 NVMe 数据。
+恢复过程会覆盖目标机的 NVMe 数据。
 
 参数说明：
 
@@ -716,7 +754,7 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
 
 恢复后两台设备的 GPT PTUUID、各分区 PARTUUID 和 ESP UUID 可能相同，这是克隆分区表的结果。每台 Jetson 只有一块 NVMe 时不会形成网络冲突，也不会影响正常启动。不要单独随机修改 PARTUUID，因为当前 Jetson 启动参数使用 `root=PARTUUID=...`，只改 GUID 会造成无法启动。
 
-### 8. 初始化目标机身份
+### 9. 初始化目标机身份
 
 目标机恢复完成并正常开机后执行：
 
@@ -739,7 +777,7 @@ curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/final
 
 由于 SSH host key 已改变，管理主机再次连接相同 IP 时可能显示 `REMOTE HOST IDENTIFICATION HAS CHANGED`。这表示管理主机仍保存旧 key，不表示脚本执行失败。
 
-### 9. 可选安装最小桌面
+### 10. 可选安装最小桌面
 
 ```bash
 sudo apt install ubuntu-desktop-minimal
@@ -777,6 +815,18 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh
 
 该脚本只应在最终黄金母机上运行，执行完成后会自动关机。
 
+### backup.sh
+
+GitHub Raw 地址：
+
+```text
+https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh
+```
+
+该脚本在 x86_64 Ubuntu 刷机主机运行，只负责打包完整 `images/`。默认读取 `~/Linux_for_Tegra`，将归档和 MD5 保存到 `~/backup/`。文件名使用 `goldimage_YYMMDD` 加两位序号，例如 `goldimage_26072701.tar` 和 `goldimage_26072701.md5`。
+
+脚本本身应由普通登录用户运行；读取 root 所有的镜像文件时，脚本会自行执行 `sudo`。可以将 `Linux_for_Tegra` 路径作为唯一参数传入。
+
 ### finalize.sh
 
 GitHub Raw 地址：
@@ -803,3 +853,5 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
 3. backup_restore 的 `-e nvme0n1` 表示整块目标 NVMe，不是刷机主机自己的 NVMe。
 4. 恢复会覆盖目标机 NVMe 上的现有数据。
 5. GPT PARTUUID 相同在一台 Jetson 只安装一块 NVMe 时没有影响，不要脱离启动配置单独修改。
+6. 黄金镜像必须保存完整 `images/`，并在每次恢复前验证对应 MD5。
+7. HOME 下的归档仍需再复制到另一块硬盘、NAS 或对象存储，不能作为唯一副本。
