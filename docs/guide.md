@@ -28,10 +28,11 @@ robotinit/
     ├── provision.sh
     ├── sanitize.sh
     ├── backup.sh
-    └── finalize.sh
+    ├── finalize.sh
+    └── rename.sh
 ```
 
-四个脚本的职责：
+五个脚本的职责：
 
 | 脚本 | 执行位置 | 用途 |
 | --- | --- | --- |
@@ -39,6 +40,7 @@ robotinit/
 | `sanitize.sh` | 黄金母机 | 清除会被克隆的机器状态并自动关机 |
 | `backup.sh` | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整黄金镜像，并生成 MD5 |
 | `finalize.sh` | 恢复后的目标机 | 设置 hostname，重建 machine-id 和 SSH host key，然后重启 |
+| `rename.sh` | 已投入使用的 Jetson | 离线迁移用户名、登录界面、home 和 hostname，重建机器身份并重启 |
 
 GitHub Raw 地址使用 `main` 分支。只有文件已经提交并推送到 GitHub 后，远程设备才能通过这些地址下载最新脚本。
 
@@ -844,6 +846,47 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
 
 正常生产流程中，每台恢复后的目标机只执行一次。
 
+### rename.sh
+
+该脚本只用于已经投入使用、当前账户仍有进程或桌面会话的 Jetson。它不替代黄金镜像恢复后的 `finalize.sh`。
+
+当前修正版尚未完成一次端到端实机验证，不应直接用于生产设备。
+
+先将脚本下载为本地文件。脚本需要把自身复制到 root-only 工作目录，以便下次开机前执行，因此不支持 `curl | sudo bash`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/rename.sh \
+  -o /tmp/rename.sh
+```
+
+只检查当前 `m03` 能否迁移为 `m04`：
+
+```bash
+sudo bash /tmp/rename.sh \
+  --old-user m03 \
+  -u m04 \
+  -h m04 \
+  --check
+```
+
+确认后执行：
+
+```bash
+sudo bash /tmp/rename.sh -u m04 -h m04
+```
+
+通过 `sudo` 执行时，原用户名默认读取 `SUDO_USER`；root 直接执行或系统中有多个普通用户时应显式添加 `--old-user`。`-h` 在该脚本中表示 hostname，显示帮助必须使用 `--help`。自动化执行可添加 `--yes`，投递任务但暂不重启可添加 `--no-reboot`。
+
+脚本先校验用户名、home、主组、AccountsService 和 Samba 账户冲突，再投递一次性 systemd 任务。第一次重启后，该任务会在 GDM、SSH 和用户会话启动前完成以下操作：
+
+- 保持 UID/GID 不变，迁移用户名、同名主组、home、GECOS 登录显示名称和绝对 home 软链接。
+- 迁移 GDM/LightDM/SDDM 自动登录、AccountsService、sudoers、systemd 服务、polkit、cron、systemd linger、subuid/subgid 和邮件文件。
+- 更新 `/etc/hostname`、`/etc/hosts` 及文本配置中的旧 home 绝对路径。
+- 重建 machine-id 和 SSH host key，清理 NetworkManager 状态、USB MAC、随机种子、DHCP 租约、蓝牙状态、旧日志和机器身份相关缓存。
+- 保留用户密码、SSH 私钥、`authorized_keys`、项目数据、Wi-Fi connection profile 和应用配置。
+
+任务完成后自动进行第二次重启，使 PID 1、D-Bus、NetworkManager 和其他服务全部使用新 machine-id。整个过程中 SSH 会断开，客户端还需要删除旧 hostname/IP 对应的 known_hosts 记录。自动备份位于 `/var/lib/robotinit/rename/backup/`，执行日志和残留路径报告位于同一目录；如果任务失败，它会保留并在下次启动时重试。
+
 ---
 
 ## 六、关键注意事项
@@ -855,3 +898,4 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
 5. GPT PARTUUID 相同在一台 Jetson 只安装一块 NVMe 时没有影响，不要脱离启动配置单独修改。
 6. 黄金镜像必须保存完整 `images/`，并在每次恢复前验证对应 MD5。
 7. HOME 下的归档仍需再复制到另一块硬盘、NAS 或对象存储，不能作为唯一副本。
+8. `rename.sh` 会连续启动两次并更换 SSH host key；远程执行前必须确保设备断电恢复后仍能正常启动，并保留本地控制台或 Recovery 手段。
