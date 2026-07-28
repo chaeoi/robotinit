@@ -239,7 +239,7 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 仓库中的 `provision.sh` 用于自动完成环境安装、检查依赖并在结束后重启。自动化脚本和下面的手动步骤应二选一，不要重复执行。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
 ```
 
 脚本默认配置 `ubuntu` 用户，并在安装完成后自动重启。下面继续保留原始手动步骤，便于检查每项操作的具体内容。
@@ -608,7 +608,7 @@ sudo systemctl enable --now code-server@$USER
 在黄金母机正常运行、软件和 Wi-Fi 均配置完成后执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh | sudo bash -s -- --yes
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh | sudo bash -s -- --yes
 ```
 
 管道各部分含义：
@@ -690,7 +690,7 @@ Linux_for_Tegra/tools/backup_restore/images/
 读取母机 NVMe 成功后，在刷机主机以普通用户执行一条命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
 ```
 
 脚本会把完整 `images/` 打包，并生成对应 MD5。例如 2026 年 7 月 27 日第一次打包会生成：
@@ -761,7 +761,7 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
 目标机恢复完成并正常开机后执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh | sudo bash -s -- m02
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh | sudo bash -s -- m02
 ```
 
 `m02` 是传给脚本的目标 hostname。下一台设备应按照既定命名规则替换为其他名称。
@@ -796,7 +796,7 @@ sudo apt install ubuntu-desktop-minimal
 GitHub Raw 地址：
 
 ```text
-https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh
+https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh
 ```
 
 脚本自动安装机器人运行环境，默认目标用户为 `ubuntu`，默认结束后重启。它还会验证 ROS2、Python 包、TensorRT、PyTorch CUDA 和内核模块。
@@ -806,7 +806,7 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh
 GitHub Raw 地址：
 
 ```text
-https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh
+https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh
 ```
 
 主要选项：
@@ -822,7 +822,7 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/sanitize.sh
 GitHub Raw 地址：
 
 ```text
-https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh
+https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh
 ```
 
 该脚本在 x86_64 Ubuntu 刷机主机运行，只负责打包完整 `images/`。默认读取 `~/Linux_for_Tegra`，将归档和 MD5 保存到 `~/backup/`。文件名使用 `goldimage_YYMMDD` 加两位序号，例如 `goldimage_26072701.tar` 和 `goldimage_26072701.md5`。
@@ -834,7 +834,7 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh
 GitHub Raw 地址：
 
 ```text
-https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
+https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
 ```
 
 主要参数：
@@ -855,7 +855,7 @@ https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh
 先将脚本下载为本地文件。脚本需要把自身复制到 root-only 工作目录，以便下次开机前执行，因此不支持 `curl | sudo bash`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/rename.sh \
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/rename.sh \
   -o /tmp/rename.sh
 ```
 
