@@ -57,7 +57,7 @@ finalize.sh        为每台目标机生成独立身份
 `backup/`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
 ```
 
 删除旧镜像、解包和刷机命令见 [部署手册](docs/guide.md)。
@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backu
 > **实机验证状态：** `rename.sh` 的修正版尚未完整跑通一次改名流程，当前不要用于生产机器。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chaeoi/robotinit/main/scripts/rename.sh \
+curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/rename.sh \
   -o /tmp/rename.sh
 sudo bash /tmp/rename.sh -u m04 -h m04 --check
 sudo bash /tmp/rename.sh -u m04 -h m04
