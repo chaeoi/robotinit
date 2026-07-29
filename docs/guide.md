@@ -39,7 +39,7 @@ robotinit/
 | `provision.sh` | 正常启动的 Jetson | 安装 ROS2、CAN、CUDA、TensorRT、PyTorch 等运行环境 |
 | `sanitize.sh` | 黄金母机 | 清除会被克隆的机器状态并自动关机 |
 | `backup.sh` | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整黄金镜像，并生成 MD5 |
-| `finalize.sh` | 恢复后的目标机 | 设置 hostname，重建 machine-id 和 SSH host key，然后重启 |
+| `finalize.sh` | 恢复后的目标机 | 归一化 NVMe 容量，设置 hostname，重建 machine-id 和 SSH host key，然后重启 |
 | `rename.sh` | 已投入使用的 Jetson | 离线迁移用户名、登录界面、home 和 hostname，重建机器身份并重启 |
 
 GitHub Raw 地址使用 `main` 分支。只有文件已经提交并推送到 GitHub 后，远程设备才能通过这些地址下载最新脚本。
@@ -601,7 +601,7 @@ sudo systemctl enable --now code-server@$USER
 
 ## 四、制作黄金镜像并恢复目标机
 
-本章先使用 NVIDIA 工具读取母机镜像，再使用脚本打包，并给出删除旧镜像、解包和刷写目标机的命令。在线脚本统一使用 GitHub Raw 源文件地址。
+本章先使用 NVIDIA 工具读取母机镜像，再使用脚本打包，并给出删除旧镜像、解包、刷写目标机、归一化 NVMe 容量和初始化设备身份的命令。在线脚本统一使用 GitHub Raw 源文件地址。
 
 ### 1. 净化黄金母机
 
@@ -752,13 +752,13 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
 
 目标 NVMe 可以是空盘，也可以已有分区。恢复脚本会先写入黄金镜像的 GPT，再执行 `partprobe`，然后重新格式化和恢复各分区，因此不依赖目标盘原有分区名称。
 
-目标盘容量不能小于母机盘。量产时使用相同型号和容量的 NVMe 最稳妥。
+目标盘的实际扇区数不能小于黄金镜像 GPT 记录的容量。黄金母机应使用所有量产 NVMe 中实际容量最小的型号，使镜像能够恢复到相同或更大的目标盘；不能只按厂商标称容量判断。
 
 恢复后两台设备的 GPT PTUUID、各分区 PARTUUID 和 ESP UUID 可能相同，这是克隆分区表的结果。每台 Jetson 只有一块 NVMe 时不会形成网络冲突，也不会影响正常启动。不要单独随机修改 PARTUUID，因为当前 Jetson 启动参数使用 `root=PARTUUID=...`，只改 GUID 会造成无法启动。
 
-### 9. 初始化目标机身份
+### 9. 归一化目标 NVMe 容量并初始化身份
 
-目标机恢复完成并正常开机后执行：
+这是每台目标机恢复后的必选步骤，不能因为目标盘与黄金母盘标称容量相同而跳过。目标机恢复完成并第一次正常开机后执行：
 
 ```bash
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/finalize.sh | sudo bash -s -- m02
@@ -766,8 +766,11 @@ curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotini
 
 `m02` 是传给脚本的目标 hostname。下一台设备应按照既定命名规则替换为其他名称。
 
-`finalize.sh` 会：
+`finalize.sh` 会按以下顺序执行：
 
+- 确认根文件系统位于 `/dev/nvme0n1p1`，并检查 NVIDIA 扩容脚本及依赖。
+- 运行 R36.5 自带的 `/usr/lib/nvidia/resizefs/nvresizefs.sh`。目标盘更大时，将 secondary GPT 移到物理磁盘末端，再在线扩展 APP 和 ext4 文件系统；同容量盘已经占满时正常通过。
+- 验证 APP 已到达 NVMe 最后可用扇区，并使用 `sgdisk -v` 检查 GPT 完整性。
 - 写入 `/etc/hostname` 和 `/etc/hosts`。
 - 重新生成 `/etc/machine-id`。
 - 删除黄金镜像中的 SSH host key，并生成 RSA、ECDSA 和 ED25519 新 key。
@@ -775,7 +778,11 @@ curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotini
 - 写入 `/var/lib/robotinit/initialized` 标记。
 - 自动重启。
 
-重启后，hostname、machine-id、SSH host key、Wi-Fi MAC、USB MAC、NetworkManager secret key 和随机种子均为当前设备自己的值。
+NVMe 分区和 ext4 文件系统可以在线扩展，不需要为扩容单独重启。`finalize.sh` 完成其他初始化操作后仍会按原流程统一重启一次。容量归一化位于所有身份修改之前；如果扩容或 GPT 验证失败，脚本会立即退出并保留原 hostname、machine-id 和 SSH host key，修复后可以重新运行。
+
+R36.5 的扩容脚本由 `nvidia-l4t-oem-config` 包提供。它的 `--check` 内部可能修正 secondary GPT 的位置，并非普通只读检查；因此实际归一化只在非 `--check` 的 `finalize.sh` 流程中执行。不要在刷机主机或黄金母机备份前手工运行扩容，也不要修改 GPT、PARTUUID 或 `nvpartitionmap.txt`。
+
+重启后，根文件系统会使用目标 NVMe 的可用容量，hostname、machine-id、SSH host key、Wi-Fi MAC、USB MAC、NetworkManager secret key 和随机种子均为当前设备自己的值。
 
 由于 SSH host key 已改变，管理主机再次连接相同 IP 时可能显示 `REMOTE HOST IDENTIFICATION HAS CHANGED`。这表示管理主机仍保存旧 key，不表示脚本执行失败。
 
@@ -841,7 +848,7 @@ https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scri
 
 - 第一个位置参数：目标 hostname，例如 `m02`。
 - `--hostname <name>`：显式指定 hostname。
-- `--check`：只检查环境和 hostname 参数。
+- `--check`：只检查环境、hostname 参数和 NVMe 容量归一化依赖，不修改 GPT 或系统身份。
 - `--no-reboot`：完成后不自动重启，仅用于调试。
 
 正常生产流程中，每台恢复后的目标机只执行一次。
@@ -895,7 +902,9 @@ sudo bash /tmp/rename.sh -u m04 -h m04
 2. `sanitize.sh` 执行关机后，母机不要再次正常启动，应直接进入 Recovery。
 3. backup_restore 的 `-e nvme0n1` 表示整块目标 NVMe，不是刷机主机自己的 NVMe。
 4. 恢复会覆盖目标机 NVMe 上的现有数据。
-5. GPT PARTUUID 相同在一台 Jetson 只安装一块 NVMe 时没有影响，不要脱离启动配置单独修改。
-6. 黄金镜像必须保存完整 `images/`，并在每次恢复前验证对应 MD5。
-7. HOME 下的归档仍需再复制到另一块硬盘、NAS 或对象存储，不能作为唯一副本。
-8. `rename.sh` 会连续启动两次并更换 SSH host key；远程执行前必须确保设备断电恢复后仍能正常启动，并保留本地控制台或 Recovery 手段。
+5. 黄金母机应使用所有量产 NVMe 中实际容量最小的型号；目标盘实际扇区数不能小于镜像 GPT 记录的容量。
+6. 每台恢复后的目标机第一次正常启动时都必须运行 `finalize.sh`；脚本会先完成 NVMe 容量归一化，再修改设备身份。
+7. GPT PARTUUID 相同在一台 Jetson 只安装一块 NVMe 时没有影响，不要脱离启动配置单独修改。
+8. 黄金镜像必须保存完整 `images/`，并在每次恢复前验证对应 MD5。
+9. HOME 下的归档仍需再复制到另一块硬盘、NAS 或对象存储，不能作为唯一副本。
+10. `rename.sh` 会连续启动两次并更换 SSH host key；远程执行前必须确保设备断电恢复后仍能正常启动，并保留本地控制台或 Recovery 手段。
