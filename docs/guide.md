@@ -160,7 +160,7 @@ sudo tools/l4t_create_default_user.sh \
 
 - `-u ubuntu`：创建用户名 `ubuntu`。
 - `-p 123`：设置初始密码。
-- `-n m00`：将黄金母机初始 hostname 设置为 `m01`。
+- `-n m00`：将黄金母机初始 hostname 设置为 `m00`。
 - `-a`：启用自动登录配置。
 - `--accept-license`：预先接受 NVIDIA 许可协议。
 
@@ -550,7 +550,7 @@ Git 用于获取和管理项目代码。命令未使用 `-y`，APT 会按照原�
 sudo apt install avahi-daemon
 ```
 
-Avahi 提供 `.local` 主机名解析。设备 hostname 为 `m01` 时，同一局域网通常可以通过 `m01.local` 访问。
+Avahi 提供 `.local` 主机名解析。设备 hostname 为 `m00` 时，同一局域网通常可以通过 `m00.local` 访问。
 
 多台克隆设备必须在运行 `finalize.sh` 后拥有不同 hostname，否则 `.local` 名称会冲突。
 
