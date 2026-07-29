@@ -7,14 +7,17 @@ trap '' HUP
 TARGET_HOSTNAME=""
 NO_REBOOT=0
 CHECK_ONLY=0
+ROOT_DISK="/dev/nvme0n1"
+ROOT_PARTITION="/dev/nvme0n1p1"
+RESIZE_SCRIPT="/usr/lib/nvidia/resizefs/nvresizefs.sh"
 
 usage() {
   cat <<'EOF'
 用法：sudo ./finalize.sh <hostname> [选项]
       sudo ./finalize.sh --hostname <hostname> [选项]
 
-目标机首次开机后执行一次，设置本机 hostname，重建 machine-id 和 SSH host key，
-清理克隆残留状态，最后默认自动重启。
+目标机首次开机后执行一次，先归一化 NVMe 根分区容量，再设置本机 hostname，
+重建 machine-id 和 SSH host key，清理克隆残留状态，最后默认自动重启。
 
 选项：
   --hostname <name>  目标机 hostname
@@ -82,10 +85,47 @@ if [[ -z "$TARGET_HOSTNAME" ]] || ! validate_hostname "$TARGET_HOSTNAME"; then
   exit 2
 fi
 
+check_capacity_environment() {
+  local command_name
+  local root_source
+  local sysfs_file
+
+  for command_name in blockdev df findmnt lsblk sgdisk; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "错误：NVMe 容量归一化缺少命令：$command_name" >&2
+      exit 1
+    fi
+  done
+
+  root_source="$(findmnt -no SOURCE / 2>/dev/null || true)"
+  if [[ "$root_source" != "$ROOT_PARTITION" ]]; then
+    echo "错误：根文件系统位于 ${root_source:-未知设备}，不是预期的 $ROOT_PARTITION。" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$RESIZE_SCRIPT" ]]; then
+    echo "错误：找不到 NVIDIA NVMe 扩容脚本：$RESIZE_SCRIPT" >&2
+    exit 1
+  fi
+
+  for sysfs_file in \
+    /sys/class/block/nvme0n1p1/start \
+    /sys/class/block/nvme0n1p1/size; do
+    if [[ ! -r "$sysfs_file" ]]; then
+      echo "错误：无法读取 NVMe 分区信息：$sysfs_file" >&2
+      exit 1
+    fi
+  done
+}
+
+check_capacity_environment
+
 if ((CHECK_ONLY)); then
   echo "检查通过：当前是 Jetson Linux，目标 hostname 为 $TARGET_HOSTNAME。"
   echo "当前 hostname：$(hostnamectl --static 2>/dev/null || hostname)"
   echo "当前 machine-id：$(cat /etc/machine-id 2>/dev/null || true)"
+  echo "当前根文件系统：$(findmnt -no SOURCE,FSTYPE,SIZE,USED,AVAIL /)"
+  echo "NVMe 容量归一化依赖检查通过；--check 不执行可能修改 GPT 的 NVIDIA 检查。"
   exit 0
 fi
 
@@ -101,6 +141,72 @@ on_error() {
 }
 
 trap on_error ERR
+
+normalize_rootfs_capacity() {
+  local resize_state
+  local logical_sector_size
+  local total_sectors
+  local root_start
+  local root_size
+  local root_end
+  local last_usable_sector
+  local unused_sectors
+  local verify_output
+
+  resize_state="$("$RESIZE_SCRIPT" --check)"
+  case "$resize_state" in
+    true)
+      "$RESIZE_SCRIPT"
+      echo "目标 NVMe 的 APP 分区和 ext4 文件系统已扩展。"
+      ;;
+    false)
+      echo "NVIDIA 脚本报告无需扩展，继续验证 APP 是否已占满目标 NVMe。"
+      ;;
+    *)
+      echo "错误：无法判断 APP 是否支持扩展，检查结果：$resize_state" >&2
+      return 1
+      ;;
+  esac
+
+  logical_sector_size="$(blockdev --getss "$ROOT_DISK")"
+  if [[ "$logical_sector_size" != "512" ]]; then
+    echo "错误：$ROOT_DISK 的逻辑扇区大小为 $logical_sector_size，不是当前流程要求的 512。" >&2
+    return 1
+  fi
+
+  total_sectors="$(blockdev --getsz "$ROOT_DISK")"
+  root_start="$(</sys/class/block/nvme0n1p1/start)"
+  root_size="$(</sys/class/block/nvme0n1p1/size)"
+
+  if [[ ! "$total_sectors" =~ ^[0-9]+$ ]] ||
+    [[ ! "$root_start" =~ ^[0-9]+$ ]] ||
+    [[ ! "$root_size" =~ ^[0-9]+$ ]]; then
+    echo "错误：无法读取有效的 NVMe 扇区信息。" >&2
+    return 1
+  fi
+
+  root_end=$((root_start + root_size - 1))
+  last_usable_sector=$((total_sectors - 34))
+  unused_sectors=$((last_usable_sector - root_end))
+  if ((unused_sectors < 0 || unused_sectors > 7)); then
+    echo "错误：APP 末端与 NVMe 最后可用扇区相差 $unused_sectors 个扇区，容量归一化未完成。" >&2
+    return 1
+  fi
+
+  verify_output="$(sgdisk -v "$ROOT_DISK" 2>&1)"
+  printf '%s\n' "$verify_output"
+  if [[ "$verify_output" != *"No problems found."* ]]; then
+    echo "错误：GPT 完整性检查未通过。" >&2
+    return 1
+  fi
+
+  echo "目标 NVMe 容量归一化验证通过。"
+  lsblk -b -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS "$ROOT_DISK"
+  df -h /
+}
+
+step "归一化目标 NVMe 容量"
+normalize_rootfs_capacity
 
 step "设置 hostname"
 hostnamectl set-hostname "$TARGET_HOSTNAME"
