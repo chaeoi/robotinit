@@ -151,7 +151,7 @@ sudo ./apply_binaries.sh
 sudo tools/l4t_create_default_user.sh \
      -u ubuntu \
      -p 123 \
-     -n m01 \
+     -n m00 \
      -a \
      --accept-license
 ```
@@ -160,7 +160,7 @@ sudo tools/l4t_create_default_user.sh \
 
 - `-u ubuntu`：创建用户名 `ubuntu`。
 - `-p 123`：设置初始密码。
-- `-n m01`：将黄金母机初始 hostname 设置为 `m01`。
+- `-n m00`：将黄金母机初始 hostname 设置为 `m01`。
 - `-a`：启用自动登录配置。
 - `--accept-license`：预先接受 NVIDIA 许可协议。
 
