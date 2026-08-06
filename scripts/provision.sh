@@ -18,7 +18,7 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONUNBUFFERED=1
 
 STEP=0
-TOTAL_STEPS=13
+TOTAL_STEPS=14
 ROS_KEY_TMP=""
 
 cleanup() {
@@ -118,12 +118,18 @@ step "安装并配置 ROS2 Humble"
   python3-argcomplete
 
 ROS_SETUP_LINE="source /opt/ros/humble/setup.bash"
+ROS_LOCALHOST_LINE="export ROS_LOCALHOST_ONLY=1"
 TARGET_BASHRC="${TARGET_HOME}/.bashrc"
 touch "$TARGET_BASHRC"
 if ! grep -Fqx "$ROS_SETUP_LINE" "$TARGET_BASHRC"; then
   printf '\n%s\n' "$ROS_SETUP_LINE" >> "$TARGET_BASHRC"
 fi
+if ! grep -Fqx "$ROS_LOCALHOST_LINE" "$TARGET_BASHRC"; then
+  printf '%s\n' "$ROS_LOCALHOST_LINE" >> "$TARGET_BASHRC"
+fi
 chown "$TARGET_USER:$TARGET_USER" "$TARGET_BASHRC"
+
+export ROS_LOCALHOST_ONLY=1
 
 run_as_target bash -c \
   'source /opt/ros/humble/setup.bash && ros2 --help >/dev/null'
@@ -134,8 +140,7 @@ step "安装 CAN、手柄和数据通信依赖"
   python3-pygame \
   python3-zmq
 
-run_as_target python3 -m pip install \
-  --user \
+python3 -m pip install \
   --no-input \
   --no-cache-dir \
   "python-can==4.6.1"
@@ -236,6 +241,15 @@ run_as_target python3 -m pip install \
   "numpy==1.24.4"
 
 step "验证安装结果"
+grep -Fqx "$ROS_LOCALHOST_LINE" "$TARGET_BASHRC"
+
+python3 - <<'PY'
+import can
+
+assert can.__version__ == "4.6.1"
+print("System python-can:", can.__version__, can.__file__)
+PY
+
 run_as_target python3 - <<'PY'
 import can
 import numpy
@@ -265,14 +279,30 @@ modprobe can_bcm
 modprobe joydev
 modprobe kcan
 
+step "配置 Jetson MAXN 电源模式"
+if [[ ! -x /usr/sbin/nvpmodel ]]; then
+  echo "错误：找不到 Jetson 电源模式工具：/usr/sbin/nvpmodel" >&2
+  exit 1
+fi
+
+# 拒绝 nvpmodel 自己的立即重启提示，由脚本在全部验证完成后统一重启。
+/usr/sbin/nvpmodel -m 0 <<<"NO"
+NVP_MODE_OUTPUT="$(/usr/sbin/nvpmodel -q)"
+printf '%s\n' "$NVP_MODE_OUTPUT"
+if ! grep -Fqx "NV Power Mode: MAXN" <<<"$NVP_MODE_OUTPUT" ||
+  ! grep -Fqx "0" <<<"$NVP_MODE_OUTPUT"; then
+  echo "错误：Jetson 电源模式未设置为 MAXN（mode 0）。" >&2
+  exit 1
+fi
+
 step "完成配置"
 echo "全部环境配置和验证已经完成。"
 
 if [[ "$AUTO_REBOOT" == "1" ]]; then
-  echo "系统将在 5 秒后自动重启，使用户组、mttcan 黑名单和模块配置全部生效。"
+  echo "系统将在 5 秒后自动重启，使用户组、mttcan 黑名单、模块配置和 MAXN 电源模式全部生效。"
   sync
   sleep 5
   systemctl reboot
 else
-  echo "AUTO_REBOOT=${AUTO_REBOOT}，已跳过自动重启。"
+  echo "AUTO_REBOOT=${AUTO_REBOOT}，已跳过自动重启；MAXN 模式可能需要重启后才能完全生效。"
 fi

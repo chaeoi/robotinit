@@ -50,7 +50,7 @@ finalize.sh        归一化 NVMe 容量并为每台目标机生成独立身份
 
 | 脚本 | 运行位置 | 作用 |
 | --- | --- | --- |
-| [`provision.sh`](scripts/provision.sh) | 正常启动的 Jetson | 安装 ROS 2、CAN、KH-UCANFD、CUDA、TensorRT 和 PyTorch 等运行环境 |
+| [`provision.sh`](scripts/provision.sh) | 正常启动的 Jetson | 安装 ROS 2、系统级 `python-can`、KH-UCANFD、CUDA、TensorRT 和 PyTorch，并配置 ROS 本机通信与 MAXN 电源模式 |
 | [`sanitize.sh`](scripts/sanitize.sh) | 黄金母机 | 检查网络绑定，清除不应被克隆的机器状态，并自动关机 |
 | [`backup.sh`](scripts/backup.sh) | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整 `images/`，并生成 MD5 |
 | [`finalize.sh`](scripts/finalize.sh) | 恢复后的目标机 | 归一化 NVMe 容量，设置 hostname，重建 machine-id 和 SSH host key，并自动重启 |
