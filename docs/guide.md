@@ -218,7 +218,7 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 
 ## 二、安装机器人运行环境
 
-本章保持既定环境配置的13个步骤和执行顺序。
+本章保持既定环境配置的14个步骤和执行顺序。
 
 适用环境：
 
@@ -232,7 +232,8 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 
 1. 安装基础下载、编译和 Python 工具。
 2. 安装 ROS2、CAN、手柄、IMU 权限和 KH-UCANFD 通信环境。
-3. 最后安装 CUDA、cuDNN、TensorRT、PyTorch 等强化学习推理环境。
+3. 安装 CUDA、cuDNN、TensorRT、PyTorch 等强化学习推理环境。
+4. 最后验证环境并将 Jetson 电源模式设置为 MAXN。
 
 ### 自动化脚本
 
@@ -344,12 +345,15 @@ source /opt/ros/humble/setup.bash
 grep -q "ros/humble/setup.bash" ~/.bashrc || \
   echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 
+grep -Fqx "export ROS_LOCALHOST_ONLY=1" ~/.bashrc || \
+  echo "export ROS_LOCALHOST_ONLY=1" >> ~/.bashrc
+
 source ~/.bashrc
 
 ros2 --help
 ```
 
-第一次 `source` 让当前终端立即获得 ROS2 环境；写入 `.bashrc` 使以后登录自动加载；最后通过 `ros2 --help` 验证命令可用。
+第一次 `source` 让当前终端立即获得 ROS2 环境；两项配置写入 `.bashrc` 后，`ubuntu` 用户以后登录会自动加载 ROS2 并设置 `ROS_LOCALHOST_ONLY=1`。该变量会将 ROS2 topic、service 和 action 限制在本机；需要跨机器使用 ROS2 时不要启用。systemd 服务不会读取 `.bashrc`，以后如用服务启动 ROS2 节点，还需在对应 unit 中设置 `Environment=ROS_LOCALHOST_ONLY=1`。最后通过 `ros2 --help` 验证命令可用。
 
 ### 5. 安装 CAN、手柄和数据通信依赖
 
@@ -359,13 +363,13 @@ sudo apt install -y \
   python3-pygame \
   python3-zmq
 
-python3 -m pip install python-can
+sudo python3 -m pip install --no-input --no-cache-dir "python-can==4.6.1"
 ```
 
 作用：
 
 - `can-utils`：提供 SocketCAN 检查和调试工具。
-- `python-can`：在 Python 中访问 SocketCAN 接口。
+- `python-can`：在 Python 中访问 SocketCAN 接口。当前 CAN 工具使用 `sudo python3` 配置接口，因此固定安装 `4.6.1` 到系统 Python 路径，使 root 和 `ubuntu` 都能导入同一份模块。
 - `python3-pygame`：读取 USB 手柄摇杆和按键。
 - `python3-zmq`：通过 ZeroMQ 发布控制和关节数据。
 
@@ -521,6 +525,27 @@ python3 -m pip install --user --no-cache-dir "numpy==1.24.4"
 
 - 满足当前 PyTorch wheel 的 NumPy C API 要求。
 - 保持与项目指定的 NumPy 版本一致。
+
+### 14. 配置 Jetson MAXN 电源模式
+
+```bash
+sudo /usr/sbin/nvpmodel -m 0
+```
+
+如果命令提示切换模式需要重启，输入 `YES`。重新登录后验证：
+
+```bash
+sudo /usr/sbin/nvpmodel -q
+```
+
+预期输出包含：
+
+```text
+NV Power Mode: MAXN
+0
+```
+
+AGX Orin 的 mode `0` 为 MAXN。该模式会开放最高核心数量和频率上限，但仍会受到供电和温度限制；持续重负载运行前应确认电源与散热满足要求。电源模式会跨重启保持。
 
 ---
 
@@ -806,7 +831,7 @@ GitHub Raw 地址：
 https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh
 ```
 
-脚本自动安装机器人运行环境，默认目标用户为 `ubuntu`，默认结束后重启。它还会验证 ROS2、Python 包、TensorRT、PyTorch CUDA 和内核模块。
+脚本自动安装机器人运行环境，默认目标用户为 `ubuntu`，并在该用户的 `.bashrc` 中配置 ROS2 本机通信，同时安装系统级 `python-can 4.6.1`、设置 Jetson MAXN 电源模式，默认结束后重启。它还会验证 ROS2、Python 包、TensorRT、PyTorch CUDA、MAXN 和内核模块。
 
 ### sanitize.sh
 
