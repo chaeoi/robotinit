@@ -20,9 +20,14 @@ export PYTHONUNBUFFERED=1
 STEP=0
 TOTAL_STEPS=13
 ROS_KEY_TMP=""
+NVP_REBOOT_HELPER_DIR=""
 
 cleanup() {
   [[ -z "$ROS_KEY_TMP" ]] || rm -f "$ROS_KEY_TMP"
+  if [[ -n "$NVP_REBOOT_HELPER_DIR" ]]; then
+    rm -f "$NVP_REBOOT_HELPER_DIR/reboot"
+    rmdir "$NVP_REBOOT_HELPER_DIR" 2>/dev/null || true
+  fi
 }
 
 on_error() {
@@ -281,8 +286,28 @@ if [[ ! -x /usr/sbin/nvpmodel ]]; then
   exit 1
 fi
 
-# 拒绝 nvpmodel 自己的立即重启提示，由脚本在全部验证完成后统一重启。
-/usr/sbin/nvpmodel -m 0 <<<"NO"
+# nvpmodel --force 是切换到 MAXN 的可靠非交互方式，但它会立即调用 reboot。
+# 用临时 PATH 提供成功返回的 reboot 包装器，待全部步骤完成后再由脚本统一重启。
+NVP_REBOOT_HELPER_DIR="$(mktemp -d)"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$NVP_REBOOT_HELPER_DIR/reboot"
+chmod 755 "$NVP_REBOOT_HELPER_DIR/reboot"
+NVP_MODEL_SET_OUTPUT=""
+if NVP_MODEL_SET_OUTPUT="$(
+  PATH="$NVP_REBOOT_HELPER_DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    /usr/sbin/nvpmodel --force -m 0 2>&1
+)"; then
+  :
+else
+  NVP_MODEL_SET_RC=$?
+  printf '%s\n' "$NVP_MODEL_SET_OUTPUT" >&2
+  echo "错误：无法将 Jetson 电源模式设置为 MAXN（退出码 ${NVP_MODEL_SET_RC}）。" >&2
+  exit "$NVP_MODEL_SET_RC"
+fi
+printf '%s\n' "$NVP_MODEL_SET_OUTPUT"
+rm -f "$NVP_REBOOT_HELPER_DIR/reboot"
+rmdir "$NVP_REBOOT_HELPER_DIR"
+NVP_REBOOT_HELPER_DIR=""
+
 NVP_MODE_OUTPUT="$(/usr/sbin/nvpmodel -q)"
 printf '%s\n' "$NVP_MODE_OUTPUT"
 if ! grep -Fqx "NV Power Mode: MAXN" <<<"$NVP_MODE_OUTPUT" ||
