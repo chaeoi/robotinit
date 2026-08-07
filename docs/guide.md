@@ -602,7 +602,7 @@ vi /home/ubuntu/.config/code-server/config.yaml
 先创建配置目录，再编辑 `config.yaml`。配置内容保持如下：
 
 ```yaml
-bind-addr: 0.0.0.0:5068
+bind-addr: 0.0.0.0:80
 auth: password
 password: 123
 cert: false
@@ -610,7 +610,8 @@ cert: false
 
 字段说明：
 
-- `bind-addr`：监听所有网络接口的5068端口。
+- `bind-addr`：监听所有网络接口的80端口。80是特权端口，普通用户需要通过
+  systemd capability 配置才能监听。
 - `auth: password`：启用密码认证。
 - `password: 123`：设置访问密码。
 - `cert: false`：不在 code-server 内部启用 TLS。
@@ -625,14 +626,40 @@ curl -fsSL https://code-server.dev/install.sh | sh
 
 这条命令使用 code-server 官方安装脚本。它不是本仓库脚本，因此继续使用 code-server 官方源地址。
 
-### 6. 启用并立即启动服务
+### 6. 为服务授予监听80端口的 capability
+
+code-server 默认以当前用户运行，不能直接监听80端口。为当前用户的 systemd
+实例创建 drop-in：
 
 ```bash
-sudo systemctl enable --now code-server@$USER
+sudo systemctl edit code-server@$USER.service
+```
+
+在编辑器中填入：
+
+```ini
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+```
+
+`CAP_NET_BIND_SERVICE` 只允许服务绑定1024以下端口，服务仍以普通用户运行。
+`CapabilityBoundingSet` 将该服务的 capability 上限限制为这一项。保存后重新加载
+systemd 配置：
+
+```bash
+sudo systemctl daemon-reload
+```
+
+### 7. 启用并启动服务
+
+```bash
+sudo systemctl enable code-server@$USER.service
+sudo systemctl restart code-server@$USER.service
 ```
 
 - `enable`：设置开机自动启动。
-- `--now`：立即启动。
+- `restart`：立即启动服务；如果服务已经运行，则重新创建进程以应用新的 capability。
 - `$USER`：使用当前登录用户的 systemd 实例，正常情况下为 `ubuntu`。
 
 ---
