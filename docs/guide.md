@@ -237,25 +237,38 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 
 ### 自动化脚本
 
-仓库中的 `provision.sh` 用于自动完成环境安装、检查依赖并在结束后重启。自动化脚本和下面的手动步骤应二选一，不要重复执行。
+运行 `provision.sh` 前先手动更新系统：
+
+```bash
+sudo apt update
+sudo apt install -y fwupd curl
+sudo apt upgrade -y
+sudo reboot
+```
+
+重启完成后再运行：
 
 ```bash
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
 ```
 
-脚本默认配置 `ubuntu` 用户，并在安装完成后自动重启。下面继续保留原始手动步骤，便于检查每项操作的具体内容。
+脚本默认配置 `ubuntu` 用户，不会重复更新系统，并在安装完成后自动重启。添加 ROS2 软件源后仍会刷新一次软件源索引，这是安装 ROS2 软件包所必需的。自动化脚本和下面的手动步骤应二选一，不要重复执行。
 
 ### 1. 更新系统
 
 ```bash
 sudo apt update
-sudo apt upgrade
+sudo apt install -y fwupd
+sudo apt upgrade -y
+sudo reboot
 ```
 
 作用：
 
 - `apt update`：刷新软件源索引。
+- `fwupd`：提供 Jetson bootloader 升级过程所需的 `fwupdmgr` 和 `fwupdtool`。
 - `apt upgrade`：升级当前系统中已经安装的软件包。
+- `reboot`：让升级后的 bootloader、内核和对应内核模块生效。
 
 ### 2. 安装基础下载和编译工具
 

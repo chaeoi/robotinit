@@ -18,7 +18,7 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONUNBUFFERED=1
 
 STEP=0
-TOTAL_STEPS=14
+TOTAL_STEPS=13
 ROS_KEY_TMP=""
 
 cleanup() {
@@ -68,10 +68,6 @@ run_as_target() {
 
 echo "Jetson 一键环境配置开始"
 echo "目标用户：$TARGET_USER"
-
-step "更新系统"
-"${APT_GET[@]}" update
-"${APT_GET[@]}" upgrade -y
 
 step "安装基础下载、编译和 Python 工具"
 "${APT_GET[@]}" install -y \
