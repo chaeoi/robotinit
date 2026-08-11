@@ -640,12 +640,9 @@ sudo systemctl edit code-server@$USER
 ```ini
 [Service]
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ```
 
-`CAP_NET_BIND_SERVICE` 只允许服务绑定1024以下端口，服务仍以普通用户运行。
-`CapabilityBoundingSet` 将该服务的 capability 上限限制为这一项。保存后重新加载
-systemd 配置：
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` 仅授予绑定1024以下端口所需的 capability，
 
 ```bash
 sudo systemctl daemon-reload
