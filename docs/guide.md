@@ -632,7 +632,7 @@ code-server 默认以当前用户运行，不能直接监听80端口。为当前
 实例创建 drop-in：
 
 ```bash
-sudo systemctl edit code-server@$USER.service
+sudo systemctl edit code-server@$USER
 ```
 
 在编辑器中填入：
@@ -654,8 +654,8 @@ sudo systemctl daemon-reload
 ### 7. 启用并启动服务
 
 ```bash
-sudo systemctl enable code-server@$USER.service
-sudo systemctl restart code-server@$USER.service
+sudo systemctl enable code-server@$USER
+sudo systemctl restart code-server@$USER
 ```
 
 - `enable`：设置开机自动启动。
