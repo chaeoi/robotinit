@@ -2,7 +2,7 @@
 
 本仓库记录 NVIDIA Jetson AGX Orin 从最小系统刷机、机器人运行环境安装、常用工具配置，到黄金母机备份和目标机恢复的完整流程。
 
-本文档整合刷机、环境配置、常用工具和黄金镜像部署流程。既有操作步骤、命令顺序和参数保持不变，只增加用途、前提、结果和风险说明。仓库脚本的管道执行统一使用 GitHub Raw 源文件地址。
+本文档整合刷机、环境配置、常用工具和黄金镜像部署流程，支持 basic 和 minimal 无桌面 rootfs。仓库脚本的在线下载统一使用 GitHub Raw 源文件地址。
 
 ## 适用环境
 
@@ -62,10 +62,13 @@ sudo apt update
 
 ```bash
 sudo apt install -y libxml2-utils python3 sshpass abootimg nfs-kernel-server \
-                    binfmt-support qemu-user-static device-tree-compiler
+                    binfmt-support binutils qemu-user-static device-tree-compiler \
+                    lbzip2 lz4 whois xmlstarlet zstd
 ```
 
 这些依赖分别用于解析分区 XML、运行 NVIDIA Python 脚本、通过 SSH 控制 initrd、生成启动镜像、提供 NFS、在 x86 主机处理 ARM64 rootfs，以及编译设备树。
+
+`binutils` 在 x86_64 刷机主机上安装，NVIDIA 的 `tools/l4t_flash_prerequisites.sh` 也列出了该依赖。
 
 `nfs-kernel-server` 在后续黄金镜像备份和恢复阶段仍会使用，因此不要在刷机完成后删除。
 
@@ -93,14 +96,19 @@ cd Linux_for_Tegra
 
 后续相对路径都以当前 `Linux_for_Tegra` 为基准。切换终端后，应重新确认当前目录，避免在错误的 BSP 版本中执行命令。
 
-### 6. 生成 Ubuntu Jammy minimal rootfs
+### 6. 生成 Ubuntu Jammy basic rootfs
+
+basic 的包列表需要补上 `gdisk`：后续 NVIDIA 会从 BSP 的 `rootfs/usr/sbin/sgdisk` 复制工具到备份/恢复 initrd，只在正常启动的 Jetson 上安装并不能补齐这个目录。
 
 ```bash
+grep -Fqx gdisk tools/samplefs/nvubuntu-jammy-basic-aarch64-packages || \
+  echo gdisk | sudo tee -a tools/samplefs/nvubuntu-jammy-basic-aarch64-packages
+
 sudo ./tools/samplefs/nv_build_samplefs.sh \
      --abi aarch64 \
      --distro ubuntu \
      --version jammy \
-     --flavor minimal
+     --flavor basic
 ```
 
 参数说明：
@@ -108,7 +116,9 @@ sudo ./tools/samplefs/nv_build_samplefs.sh \
 - `--abi aarch64`：生成 ARM64 用户空间。
 - `--distro ubuntu`：使用 Ubuntu。
 - `--version jammy`：对应 Ubuntu 22.04。
-- `--flavor minimal`：生成无桌面的最小系统。
+- `--flavor basic`：生成只保留 BSP 和 NVIDIA 容器基础依赖的无桌面系统。
+
+basic 比 minimal 更精简，不预装 NetworkManager 等工具。首次联网按第 13 步通过 USB SSH 转发 SOCKS 代理安装 NetworkManager，运行环境脚本再补全下载、解压、编译和 Python 依赖。也可以将此参数改回 `--flavor minimal`，后续安装步骤同样适用。两种 flavor 的区别见 [NVIDIA rootfs 文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/RootFileSystem.html#basic-flavor-root-file-system)。
 
 命令完成后，samplefs 工具会生成后续要解压进 `rootfs/` 的归档文件。
 
@@ -122,7 +132,7 @@ sudo rm -rf rootfs/*
 
 它不会删除整台刷机主机的根目录，但路径使用错误会造成严重数据损失。
 
-### 8. 解压 minimal rootfs
+### 8. 解压 rootfs
 
 ```bash
 sudo tar xpf tools/samplefs/sample_fs.tbz2 -C rootfs/
@@ -194,7 +204,7 @@ sudo ./tools/kernel_flash/l4t_initrd_flash.sh \
 - `jetson-agx-orin-devkit`：目标板型。
 - `external`：使用外置存储启动布局。
 
-这一步会覆盖目标 NVMe。刷机完成后让 Jetson 正常启动。
+实测该命令会写入目标 NVMe、内部 eMMC 和 QSPI。刷机前先备份需要保留的数据，尤其是内部 eMMC。第四章的 `-e nvme0n1` 黄金镜像只包含 NVMe 和 QSPI。刷机完成后让 Jetson 正常启动。
 
 ### 13. 通过 USB Device Mode 登录
 
@@ -204,10 +214,37 @@ ssh ubuntu@192.168.55.1
 
 正常启动后，Jetson 会通过刷机 USB-C 提供 USB 虚拟网卡，设备地址为 `192.168.55.1`。登录密码是创建默认用户时设置的密码。
 
-### 14. 连接指定 Wi-Fi
+如果使用 basic rootfs，`nmcli` 尚未安装。在刷机电脑上使用下面的命令登录，向 Jetson 的回环地址提供 SOCKS 代理；保持该 SSH 会话连接：
 
 ```bash
-sudo nmcli device wifi connect "Cudy-89D0" password "13594954"
+ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:1080 ubuntu@192.168.55.1
+```
+
+在这个 Jetson SSH 会话中执行，借用刷机电脑的网络刷新软件包索引并安装 Wi-Fi 管理工具：
+
+```bash
+sudo apt-get \
+  -o Acquire::http::Proxy="socks5h://127.0.0.1:1080" \
+  -o Acquire::https::Proxy="socks5h://127.0.0.1:1080" \
+  -o APT::Update::Error-Mode=any update
+
+sudo apt-get \
+  -o Acquire::http::Proxy="socks5h://127.0.0.1:1080" \
+  -o Acquire::https::Proxy="socks5h://127.0.0.1:1080" \
+  install -y --no-install-recommends network-manager
+
+sudo systemctl enable --now NetworkManager
+```
+
+`-R` 在 Jetson 上监听 `127.0.0.1:1080`，由刷机电脑发起外部连接；`socks5h` 也通过代理解析域名。这些 APT 代理参数只对当前命令生效，连上 Wi-Fi 后无需保留代理配置。普通 USB SSH 连接本身不会自动共享电脑的互联网连接。
+
+### 14. 连接指定 Wi-Fi
+
+刚启动 NetworkManager 时，Wi-Fi 扫描可能还没完成。先确认列表里出现目标 SSID，再连接。
+
+```bash
+nmcli device wifi list --rescan yes
+sudo nmcli --wait 60 device wifi connect "Cudy-89D0" password "13594954"
 ```
 
 NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile 后续会被保留进黄金镜像，使恢复后的目标机能够自动连接同一 Wi-Fi。
@@ -240,8 +277,8 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 运行 `provision.sh` 前先手动更新系统：
 
 ```bash
-sudo apt update
-sudo apt install -y fwupd curl
+sudo apt-get -o APT::Update::Error-Mode=any update
+sudo apt install -y fwupd udisks2 i2c-tools curl
 sudo apt upgrade -y
 sudo reboot
 ```
@@ -252,13 +289,15 @@ sudo reboot
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
 ```
 
-脚本默认配置 `ubuntu` 用户，不会重复更新系统，并在安装完成后自动重启。添加 ROS2 软件源后仍会刷新一次软件源索引，这是安装 ROS2 软件包所必需的。自动化脚本和下面的手动步骤应二选一，不要重复执行。
+脚本默认配置 `ubuntu` 用户，安装前先刷新软件包索引，补全 basic/minimal 的工具依赖；它不执行系统升级，并在安装完成后自动重启。添加 ROS2 软件源后会再次刷新索引。自动化脚本和下面的手动步骤应二选一，不要重复执行。
+
+samplefs 可能带有旧的软件包索引。如果出现 `perl` / `perl-base` 或 `python3-setuptools` / `python3-pkg-resources` 要求版本不一致，先确认 `apt-get update` 全部成功，再重跑安装。
 
 ### 1. 更新系统
 
 ```bash
-sudo apt update
-sudo apt install -y fwupd
+sudo apt-get -o APT::Update::Error-Mode=any update
+sudo apt install -y fwupd udisks2 i2c-tools curl
 sudo apt upgrade -y
 sudo reboot
 ```
@@ -267,6 +306,8 @@ sudo reboot
 
 - `apt update`：刷新软件源索引。
 - `fwupd`：提供 Jetson bootloader 升级过程所需的 `fwupdmgr` 和 `fwupdtool`。
+- `udisks2`：帮助 `fwupd` 找到 EFI 系统分区。basic 如果跳过推荐包，需要显式安装。遇到 `UEFI ESP partition not detected or configured` 时，安装 `udisks2` 后用 `sudo dpkg --configure -a` 完成升级，再重启。
+- `i2c-tools`：提供 bootloader 配置脚本读取板卡信息所需的 `i2cget`，basic 默认未安装。
 - `apt upgrade`：升级当前系统中已经安装的软件包。
 - `reboot`：让升级后的 bootloader、内核和对应内核模块生效。
 
@@ -275,8 +316,10 @@ sudo reboot
 ```bash
 sudo apt install -y \
   curl \
+  gpg \
   wget \
   unzip \
+  xz-utils \
   build-essential \
   cmake \
   libpopt-dev
@@ -285,7 +328,9 @@ sudo apt install -y \
 作用：
 
 - `curl`：下载 ROS2 密钥和 NVIDIA 依赖文件。
+- `gpg`：将 ROS2 软件源密钥转换成 keyring 格式。
 - `wget`、`unzip`：下载并解压 KH-UCANFD SDK。
+- `xz-utils`：提供解压 cuSPARSELt `.tar.xz` 文件所需的 `xz`；只有 `tar` 不够。
 - `build-essential`：提供 C/C++ 编译工具。
 - `cmake`、`libpopt-dev`：提供 KH-UCANFD 驱动所需的构建工具和开发库。
 
@@ -596,17 +641,16 @@ Avahi 提供 `.local` 主机名解析。设备 hostname 为 `m00` 时，同一�
 
 ```bash
 mkdir -p /home/ubuntu/.config/code-server
-vi /home/ubuntu/.config/code-server/config.yaml
-```
-
-先创建配置目录，再编辑 `config.yaml`。配置内容保持如下：
-
-```yaml
+cat > /home/ubuntu/.config/code-server/config.yaml <<'EOF'
 bind-addr: 0.0.0.0:80
 auth: password
 password: 123
 cert: false
+EOF
+chmod 600 /home/ubuntu/.config/code-server/config.yaml
 ```
+
+直接写入 `config.yaml`，无需为 basic rootfs 额外安装 `vi`。
 
 字段说明：
 
@@ -626,23 +670,30 @@ curl -fsSL https://code-server.dev/install.sh | sh
 
 这条命令使用 code-server 官方安装脚本。它不是本仓库脚本，因此继续使用 code-server 官方源地址。
 
+如果该入口跳转到 `raw.githubusercontent.com` 后无法连接，或安装脚本下载 GitHub Release 超时，可以通过现有镜像通道下载同一份 ARM64 deb 安装。下面的版本为本次实机验证版本：
+
+```bash
+CODE_SERVER_VERSION=4.145.2
+curl -fL --retry 3 \
+  "https://gitwarp.canghai.org/github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_arm64.deb" \
+  -o /tmp/code-server.deb
+sudo apt install /tmp/code-server.deb
+```
+
 ### 6. 为服务授予监听80端口的 capability
 
 code-server 默认以当前用户运行，不能直接监听80端口。为当前用户的 systemd
 实例创建 drop-in：
 
 ```bash
-sudo systemctl edit code-server@$USER
-```
-
-在编辑器中填入：
-
-```ini
+sudo mkdir -p "/etc/systemd/system/code-server@${USER}.service.d"
+sudo tee "/etc/systemd/system/code-server@${USER}.service.d/override.conf" >/dev/null <<'EOF'
 [Service]
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+EOF
 ```
 
-`AmbientCapabilities=CAP_NET_BIND_SERVICE` 仅授予绑定1024以下端口所需的 capability，
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` 仅授予绑定1024以下端口所需的 capability。
 
 ```bash
 sudo systemctl daemon-reload
@@ -755,7 +806,7 @@ Linux_for_Tegra/tools/backup_restore/images/
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/backup.sh | bash -s -- /home/ubuntu/Linux_for_Tegra
 ```
 
-脚本会把完整 `images/` 打包，并生成对应 MD5。例如 2026 年 7 月 27 日第一次打包会生成：
+脚本先用 `zstd -t` 检查分区归档能否完整解压，再把完整 `images/` 打包并生成对应 MD5。分区归档如果报校验错误，需要重新读取母机。例如 2026 年 7 月 27 日第一次打包会生成：
 
 ```text
 /home/ubuntu/backup/goldimage_26072701.tar
@@ -763,6 +814,8 @@ curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotini
 ```
 
 文件名格式是 `goldimage_YYMMDD` 加两位序号。同一天再次打包会依次生成 `goldimage_26072702`、`goldimage_26072703`，不会覆盖已有归档。
+
+实机遇到过 `Restored data doesn't match checksum`。这时先移走本次的 `images/`，把 BSP 的 `tools/backup_restore/nvbackup_partitions.sh` 中的 `zstd -T0` 改成 `zstd -T1`，再读取一次母机。重新生成的分区归档通过解压校验后再打包和恢复。
 
 ### 7. 删除旧镜像并解包
 
@@ -803,7 +856,7 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
      jetson-agx-orin-devkit
 ```
 
-恢复过程会覆盖目标机的 NVMe 数据。
+恢复过程会覆盖目标机的 NVMe 数据。归档包含 `QSPI0.img` 时，也会写入 QSPI。
 
 参数说明：
 
@@ -813,6 +866,8 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
 - `jetson-agx-orin-devkit`：要求目标板型与母机兼容。
 
 目标 NVMe 可以是空盘，也可以已有分区。恢复脚本会先写入黄金镜像的 GPT，再执行 `partprobe`，然后重新格式化和恢复各分区，因此不依赖目标盘原有分区名称。
+
+看到 `Successful restore of partitions on target board` 后，设备仍在临时 initrd 中。重启 Jetson，等待正常系统启动，再执行下一步。
 
 目标盘的实际扇区数不能小于黄金镜像 GPT 记录的容量。黄金母机应使用所有量产 NVMe 中实际容量最小的型号，使镜像能够恢复到相同或更大的目标盘；不能只按厂商标称容量判断。
 
@@ -847,6 +902,15 @@ R36.5 的扩容脚本由 `nvidia-l4t-oem-config` 包提供。它的 `--check` �
 重启后，根文件系统会使用目标 NVMe 的可用容量，hostname、machine-id、SSH host key、Wi-Fi MAC、USB MAC、NetworkManager secret key 和随机种子均为当前设备自己的值。
 
 由于 SSH host key 已改变，管理主机再次连接相同 IP 时可能显示 `REMOTE HOST IDENTIFICATION HAS CHANGED`。这表示管理主机仍保存旧 key，不表示脚本执行失败。
+
+恢复并初始化后，可用 `sudo nvbootctrl dump-slots-info` 查看实际启动的 bootloader 版本。如果 `Capsule update status` 为 `2` 且 `Current version` 低于 `dpkg-query -W nvidia-l4t-bootloader` 显示的版本，可重新应用已安装包的固件，再重启验证。
+
+```bash
+sudo dpkg-reconfigure nvidia-l4t-bootloader
+sudo reboot
+```
+
+本次实机从 36.5.0 回退状态恢复后，`Current version` 为 36.5.2，`Capsule update status` 为 `1`。状态含义见 [NVIDIA Bootloader 更新文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/Bootloader/UpdateAndRedundancy.html#manually-trigger-the-capsule-update)。
 
 ### 10. 可选安装最小桌面
 

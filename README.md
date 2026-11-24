@@ -13,6 +13,7 @@
 | 设备 | NVIDIA Jetson AGX Orin |
 | Jetson Linux | R36.5 |
 | 操作系统 | Ubuntu 22.04 |
+| rootfs | basic 或 minimal；basic 首次联网需先安装 NetworkManager，见部署手册 |
 | 系统盘 | 外置 NVMe `nvme0n1` |
 | ROS | ROS 2 Humble |
 | Python | 3.10 |

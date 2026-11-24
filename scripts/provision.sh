@@ -75,10 +75,15 @@ echo "Jetson 一键环境配置开始"
 echo "目标用户：$TARGET_USER"
 
 step "安装基础下载、编译和 Python 工具"
+# samplefs 可能保留旧索引；先刷新，避免已安装包与待安装依赖版本冲突。
+"${APT_GET[@]}" -o APT::Update::Error-Mode=any update
+# basic rootfs 不包含 minimal 中的全部工具，不能依赖镜像预装。
 "${APT_GET[@]}" install -y \
   curl \
+  gpg \
   wget \
   unzip \
+  xz-utils \
   build-essential \
   cmake \
   libpopt-dev \
@@ -87,7 +92,7 @@ step "安装基础下载、编译和 Python 工具"
   python3-empy \
   python3-pip
 
-for command_name in curl gpg lsb_release unzip wget; do
+for command_name in curl gpg lsb_release unzip wget xz; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "错误：缺少环境安装所依赖的系统命令：${command_name}" >&2
     exit 1
@@ -108,7 +113,7 @@ printf '%s\n' \
   "deb [arch=${ARCHITECTURE} signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirror.nju.edu.cn/ros2/ubuntu ${UBUNTU_CODENAME} main" \
   > /etc/apt/sources.list.d/ros2.list
 
-"${APT_GET[@]}" update
+"${APT_GET[@]}" -o APT::Update::Error-Mode=any update
 
 step "安装并配置 ROS2 Humble"
 "${APT_GET[@]}" install -y \

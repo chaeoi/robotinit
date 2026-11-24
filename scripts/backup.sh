@@ -81,10 +81,23 @@ done
   exit 1
 }
 
-PARTIAL="${ARCHIVE}.part"
-MD5_PARTIAL="${MD5_FILE}.part"
 sudo -v
 
+for app_archive in "$IMAGES_DIR"/*.tar.zst; do
+  [[ -f "$app_archive" ]] || continue
+  command -v zstd >/dev/null 2>&1 || {
+    echo "错误：缺少 zstd，请在刷机主机安装 zstd 后重试。" >&2
+    exit 1
+  }
+  echo "正在校验分区归档：$(basename "$app_archive")"
+  if ! sudo zstd -tq -- "$app_archive"; then
+    echo "错误：分区归档无法完整解压，请重新读取黄金母机镜像。" >&2
+    exit 1
+  fi
+done
+
+PARTIAL="${ARCHIVE}.part"
+MD5_PARTIAL="${MD5_FILE}.part"
 echo "正在打包：${IMAGES_DIR}"
 echo "保存到：${ARCHIVE}"
 
