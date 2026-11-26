@@ -36,7 +36,7 @@ robotinit/
 
 | 脚本 | 执行位置 | 用途 |
 | --- | --- | --- |
-| `provision.sh` | 正常启动的 Jetson | 安装 ROS2、CAN、CUDA、TensorRT、PyTorch 等运行环境 |
+| `provision.sh` | 正常启动的 Jetson | 安装 ROS 2、CAN 和 Python 策略所需的 GPU 运行环境 |
 | `sanitize.sh` | 黄金母机 | 清除会被克隆的机器状态并自动关机 |
 | `backup.sh` | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整黄金镜像，并生成 MD5 |
 | `finalize.sh` | 恢复后的目标机 | 归一化 NVMe 容量，设置 hostname，重建 machine-id 和 SSH host key，然后重启 |
@@ -255,8 +255,6 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 
 ## 二、安装机器人运行环境
 
-本章保持既定环境配置的14个步骤和执行顺序。
-
 适用环境：
 
 - NVIDIA Jetson AGX Orin
@@ -265,345 +263,44 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 - ROS2 Humble
 - 用户名：`ubuntu`
 
-整体顺序：
-
-1. 安装基础下载、编译和 Python 工具。
-2. 安装 ROS2、CAN、手柄、IMU 权限和 KH-UCANFD 通信环境。
-3. 安装 CUDA、cuDNN、TensorRT、PyTorch 等强化学习推理环境。
-4. 最后验证环境并将 Jetson 电源模式设置为 MAXN。
-
-### 自动化脚本
-
-运行 `provision.sh` 前先手动更新系统：
+### 1. 更新 Jetson 系统
 
 ```bash
 sudo apt-get -o APT::Update::Error-Mode=any update
-sudo apt install -y fwupd udisks2 i2c-tools curl
-sudo apt upgrade -y
+sudo apt-get install -y --no-install-recommends fwupd udisks2 i2c-tools curl
+sudo apt-get upgrade -y
 sudo reboot
 ```
 
-重启完成后再运行：
+`fwupd`、`udisks2` 和 `i2c-tools` 用于 Jetson bootloader 升级。Basic 系统曾因缺少 `udisks2` 出现 `UEFI ESP partition not detected or configured`。如果遇到该错误，先补齐上述软件包，再执行 `sudo dpkg --configure -a` 并重启。重启后应先确认当前内核对应的 `/lib/modules/$(uname -r)/build` 可用，KH-UCANFD 驱动会针对正在运行的内核编译。
+
+### 2. 安装策略运行环境
+
+重新登录 Jetson 后执行：
 
 ```bash
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
 ```
 
-脚本默认配置 `ubuntu` 用户，安装前先刷新软件包索引，补全 basic/minimal 的工具依赖；它不执行系统升级，并在安装完成后自动重启。添加 ROS2 软件源后会再次刷新索引。自动化脚本和下面的手动步骤应二选一，不要重复执行。
+| 用途 | 脚本安装或配置的内容 |
+| --- | --- |
+| ROS 2 和工作空间构建 | Humble `ros-core`、选包构建及生成 Bash 环境所需的 colcon 扩展。Yesense 和电机主控的启动脚本会调用 `colcon build --packages-select` |
+| IMU | Jetson 内核随附的 `cdc_acm` 将 Yesense USB IMU 暴露为 `/dev/ttyACM0`，`dialout` 授权部署用户访问串口。Yesense 工作空间随项目提供串口库 |
+| 电机和手柄 | KH-UCANFD 的 `kcan` 把 USB-CANFD 转接器注册为 SocketCAN 网口。系统级 `python-can 4.6.1` 兼容使用 `sudo python3` 的项目工具。Pygame、`joydev` 和 `input` 支持手柄读取 |
+| Python 策略 | NumPy 1.24.4、SciPy、PyYAML 和 PyZMQ。策略使用 SciPy 处理姿态旋转，通过 ZeroMQ 发布遥测 |
+| GPU 推理 | CUDA 12.6 运行库、cuDNN、cuSPARSELt 动态库、TensorRT Python 绑定和 Jetson 版 PyTorch。TensorRT 从 ONNX 构建引擎，PyTorch 提供 CUDA 张量并支持 TorchScript 后端 |
 
-samplefs 可能带有旧的软件包索引。如果出现 `perl` / `perl-base` 或 `python3-setuptools` / `python3-pkg-resources` 要求版本不一致，先确认 `apt-get update` 全部成功，再重跑安装。
+安装结束时，脚本会在目标用户下跑一次 TensorRT GPU 运算，检查 Python 依赖、ROS 2、colcon 和内核模块，并设置 MAXN 电源模式后重启。升级到新内核后，应先重启进入新内核，再运行脚本重建 `kcan`。
 
-### 1. 更新系统
+策略依赖使用 `--no-install-recommends` 安装。脚本逐项安装 CUDA 运行库，省去当前策略用不到的 NPP、cuFile 和 nvFatbin。`python3-libnvinfer` 的依赖包含 TensorRT 引擎、插件和 ONNX 解析库。C++ 策略若需现场编译，应按项目声明补齐开发包。`can-utils` 用于 CAN 诊断，可按需安装。
 
-```bash
-sudo apt-get -o APT::Update::Error-Mode=any update
-sudo apt install -y fwupd udisks2 i2c-tools curl
-sudo apt upgrade -y
-sudo reboot
-```
+### 3. 部署应用并检查自启链路
 
-作用：
+恢复镜像并完成 `finalize.sh` 后，将 Yesense 工作空间、电机主控工作空间、策略代码、模型与相应机器配置放到应用启动脚本使用的路径。核对 YAML 中的模型路径，首次启动会从 ONNX 在目标机生成 TensorRT 引擎。电机工作空间首次编译需要获取构建文件指定的 spdlog 版本，现场无法访问源码仓库时随应用部署构建依赖。
 
-- `apt update`：刷新软件源索引。
-- `fwupd`：提供 Jetson bootloader 升级过程所需的 `fwupdmgr` 和 `fwupdtool`。
-- `udisks2`：帮助 `fwupd` 找到 EFI 系统分区。basic 如果跳过推荐包，需要显式安装。遇到 `UEFI ESP partition not detected or configured` 时，安装 `udisks2` 后用 `sudo dpkg --configure -a` 完成升级，再重启。
-- `i2c-tools`：提供 bootloader 配置脚本读取板卡信息所需的 `i2cget`，basic 默认未安装。
-- `apt upgrade`：升级当前系统中已经安装的软件包。
-- `reboot`：让升级后的 bootloader、内核和对应内核模块生效。
+无桌面设备上的 `robot-stack.service` 应从 `multi-user.target` 启用。如果沿用桌面版 unit，移除 `After=graphical.target`，将 `WantedBy` 改为 `multi-user.target` 后重新启用。服务脚本需加载 `/opt/ros/humble/setup.bash`，unit 需设置 `ROS_LOCALHOST_ONLY=1`。首次自启前要确认部署用户可访问串口，电机启动脚本能在无终端时配置实际使用的 CAN 接口。
 
-### 2. 安装基础下载和编译工具
-
-```bash
-sudo apt install -y \
-  curl \
-  gpg \
-  wget \
-  unzip \
-  xz-utils \
-  build-essential \
-  cmake \
-  libpopt-dev
-```
-
-作用：
-
-- `curl`：下载 ROS2 密钥和 NVIDIA 依赖文件。
-- `gpg`：将 ROS2 软件源密钥转换成 keyring 格式。
-- `wget`、`unzip`：下载并解压 KH-UCANFD SDK。
-- `xz-utils`：提供解压 cuSPARSELt `.tar.xz` 文件所需的 `xz`；只有 `tar` 不够。
-- `build-essential`：提供 C/C++ 编译工具。
-- `cmake`、`libpopt-dev`：提供 KH-UCANFD 驱动所需的构建工具和开发库。
-
-`git` 在后面的常用工具配置章节安装，原步骤顺序保持不变。
-
-### 3. 安装基础 Python 工具
-
-```bash
-sudo apt install -y \
-  python3-numpy \
-  python3-psutil \
-  python3-empy \
-  python3-pip
-```
-
-作用：
-
-- `python3-numpy`：提供基础数组和矩阵运算。
-- `python3-psutil`：读取系统进程和资源信息。
-- `python3-empy`：ROS2 接口和代码生成依赖。
-- `python3-pip`：安装 Python 软件包。
-
-### 4. 安装 ROS2 Humble
-
-添加南京大学 ROS2 软件源密钥：
-
-```bash
-curl -sSL https://mirror.nju.edu.cn/rosdistro/ros.asc | \
-  gpg --dearmor | \
-  sudo tee /usr/share/keyrings/ros-archive-keyring.gpg > /dev/null
-```
-
-该命令下载 ROS 软件源签名密钥，转换成 GPG keyring 格式并保存到系统 keyring 目录。
-
-添加 ROS2 Humble 软件源：
-
-```bash
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirror.nju.edu.cn/ros2/ubuntu $(lsb_release -sc) main" | \
-  sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-```
-
-命令会自动读取当前 CPU 架构和 Ubuntu 代号，生成 ROS2 APT 软件源配置。
-
-刷新软件源并安装 ROS2：
-
-```bash
-sudo apt update
-
-sudo apt install -y ros-humble-ros-base
-
-sudo apt install -y \
-  python3-colcon-core \
-  python3-colcon-common-extensions \
-  python3-rosdep \
-  python3-argcomplete
-```
-
-作用：
-
-- `ros-humble-ros-base`：提供 ROS2 Humble 基础运行环境、`rclpy` 和基础消息类型。
-- `python3-colcon-core`、`python3-colcon-common-extensions`：构建 ROS2 工作空间。
-- `python3-rosdep`：提供 ROS 依赖管理工具。
-- `python3-argcomplete`：提供 ROS2 命令行补全支持。
-
-配置 ROS2 环境：
-
-```bash
-source /opt/ros/humble/setup.bash
-
-grep -q "ros/humble/setup.bash" ~/.bashrc || \
-  echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-
-grep -Fqx "export ROS_LOCALHOST_ONLY=1" ~/.bashrc || \
-  echo "export ROS_LOCALHOST_ONLY=1" >> ~/.bashrc
-
-source ~/.bashrc
-
-ros2 --help
-```
-
-第一次 `source` 让当前终端立即获得 ROS2 环境；两项配置写入 `.bashrc` 后，`ubuntu` 用户以后登录会自动加载 ROS2 并设置 `ROS_LOCALHOST_ONLY=1`。该变量会将 ROS2 topic、service 和 action 限制在本机；需要跨机器使用 ROS2 时不要启用。systemd 服务不会读取 `.bashrc`，以后如用服务启动 ROS2 节点，还需在对应 unit 中设置 `Environment=ROS_LOCALHOST_ONLY=1`。最后通过 `ros2 --help` 验证命令可用。
-
-### 5. 安装 CAN、手柄和数据通信依赖
-
-```bash
-sudo apt install -y \
-  can-utils \
-  python3-pygame \
-  python3-zmq
-
-sudo python3 -m pip install --no-input --no-cache-dir "python-can==4.6.1"
-```
-
-作用：
-
-- `can-utils`：提供 SocketCAN 检查和调试工具。
-- `python-can`：在 Python 中访问 SocketCAN 接口。当前 CAN 工具使用 `sudo python3` 配置接口，因此固定安装 `4.6.1` 到系统 Python 路径，使 root 和 `ubuntu` 都能导入同一份模块。
-- `python3-pygame`：读取 USB 手柄摇杆和按键。
-- `python3-zmq`：通过 ZeroMQ 发布控制和关节数据。
-
-### 6. 配置 IMU 和手柄访问权限
-
-```bash
-sudo usermod -aG dialout,input ubuntu
-```
-
-作用：
-
-- `dialout`：允许用户访问 Yesense IMU 使用的 `/dev/ttyACM0`。
-- `input`：允许用户读取 USB 手柄输入设备。
-
-用户组变更需要重新登录或重启后生效。Yesense IMU 使用的 `cdc_acm` 是系统原有内核模块，不需要额外安装。
-
-### 7. 禁用 Jetson 自带的 mttcan
-
-```bash
-echo "blacklist mttcan" | sudo tee /etc/modprobe.d/denylist-mttcan.conf
-```
-
-该配置阻止 Jetson 自带 `mttcan` 模块在后续启动时自动加载，避免与外接 KH-UCANFD 驱动的使用方式冲突。
-
-写入黑名单后重启，使黑名单和用户组配置生效：
-
-```bash
-sudo reboot
-```
-
-重启会中断 SSH。等待设备重新上线后，再继续下一步。
-
-### 8. 重启后加载 CAN 和手柄内核模块
-
-重新登录 Jetson 后执行：
-
-```bash
-sudo modprobe can
-sudo modprobe can_raw
-sudo modprobe can_bcm
-sudo modprobe joydev
-```
-
-作用：
-
-- `can`：Linux CAN 核心模块。
-- `can_raw`：提供 SocketCAN RAW socket。
-- `can_bcm`：提供 SocketCAN Broadcast Manager。
-- `joydev`：为 USB 手柄提供 `/dev/input/js*` 输入接口。
-
-### 9. 安装 KH-UCANFD 驱动
-
-```bash
-mkdir -p /tmp/KH-UCANFD
-cd /tmp/KH-UCANFD
-
-wget -O KH-UCANFD_Linux_SDK.zip \
-  https://gitee.com/ChengDu-KunHong/KH-UCANFD_Linux_SDK/releases/download/latest/KH-UCANFD_Linux_SDK.zip
-
-unzip -o KH-UCANFD_Linux_SDK.zip
-
-cd "$(find . -maxdepth 1 -type d -name 'KH-UCANFD_Linux_SDK*' | sort -V | tail -n 1)"
-
-sudo ./build.sh
-sudo modprobe kcan
-```
-
-作用：
-
-- 在 `/tmp` 中下载并解压 KH-UCANFD SDK。
-- 自动进入当前目录下版本号最新的 `KH-UCANFD_Linux_SDK*` 目录，避免写死 `1.4.1`。
-- 编译并安装 `kcan` 内核驱动。
-- 加载 `kcan`，将外接 USB-CANFD 设备注册为 Linux SocketCAN 接口。
-
-如果上游目录结构变化导致找不到 `build.sh`，先执行 `find . -name build.sh -print` 查看实际路径。
-
-### 10. 安装 CUDA、cuDNN 和 TensorRT
-
-```bash
-sudo apt-get install -y \
-  nvidia-cuda \
-  nvidia-cudnn \
-  cuda-cupti-12-6 \
-  cuda-nvtx-12-6 \
-  tensorrt \
-  nvidia-l4t-dla-compiler
-
-sudo ldconfig
-```
-
-作用：
-
-- `nvidia-cuda`：安装 Jetson CUDA 12.6 运行环境和基础 GPU 计算库。
-- `nvidia-cudnn`：提供神经网络 GPU 算子。
-- `cuda-cupti-12-6`：提供 CUDA Profiling Tools Interface。
-- `cuda-nvtx-12-6`：提供 PyTorch 需要的 `libnvToolsExt.so.1`。
-- `tensorrt`：提供 TensorRT 运行时、Python 绑定和 ONNX 解析器。
-- `nvidia-l4t-dla-compiler`：提供 TensorRT 导入需要的 `libnvdla_compiler.so`。
-- `ldconfig`：更新系统动态链接库缓存。
-
-### 11. 安装 cuSPARSELt
-
-```bash
-mkdir -p /tmp/codex-cusparselt-0.6.2.3
-cd /tmp/codex-cusparselt-0.6.2.3
-
-curl -fL --retry 3 -O \
-  "https://developer.download.nvidia.cn/compute/cusparselt/redist/libcusparse_lt/linux-sbsa/libcusparse_lt-linux-sbsa-0.6.2.3-archive.tar.xz"
-
-tar -xf libcusparse_lt-linux-sbsa-0.6.2.3-archive.tar.xz
-
-sudo cp -a \
-  libcusparse_lt-linux-sbsa-0.6.2.3-archive/include/. \
-  /usr/local/cuda/include/
-
-sudo cp -a \
-  libcusparse_lt-linux-sbsa-0.6.2.3-archive/lib/. \
-  /usr/local/cuda/targets/aarch64-linux/lib/
-
-sudo ldconfig
-```
-
-作用：
-
-- 安装 cuSPARSELt 0.6.2.3。
-- 将头文件复制到 CUDA include 目录。
-- 将 SBSA ARM64 动态库复制到 Jetson CUDA 库目录。
-- 提供 NVIDIA Jetson PyTorch 需要的 `libcusparseLt.so.0`。
-
-### 12. 安装 Jetson CUDA 版 PyTorch
-
-```bash
-python3 -m pip install --user --no-cache-dir \
-  "https://developer.download.nvidia.cn/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl"
-```
-
-作用：
-
-- 安装适配 JetPack 6.1、Python 3.10 和 ARM64 的 NVIDIA PyTorch wheel。
-- 加载 TorchScript 强化学习策略。
-- 为 TensorRT 提供 CUDA Tensor。
-- TensorRT 不可用时作为 GPU 或 CPU 推理后端。
-
-`--user` 会将 Python 包安装到当前 `ubuntu` 用户目录，不覆盖系统 Python 包。
-
-### 13. 将 NumPy 调整到项目指定版本
-
-```bash
-python3 -m pip install --user --no-cache-dir "numpy==1.24.4"
-```
-
-作用：
-
-- 满足当前 PyTorch wheel 的 NumPy C API 要求。
-- 保持与项目指定的 NumPy 版本一致。
-
-### 14. 配置 Jetson MAXN 电源模式
-
-```bash
-sudo /usr/sbin/nvpmodel -m 0
-```
-
-如果命令提示切换模式需要重启，输入 `YES`。重新登录后验证：
-
-```bash
-sudo /usr/sbin/nvpmodel -q
-```
-
-预期输出包含：
-
-```text
-NV Power Mode: MAXN
-0
-```
-
-AGX Orin 的 mode `0` 为 MAXN。该模式会开放最高核心数量和频率上限，但仍会受到供电和温度限制；持续重负载运行前应确认电源与散热满足要求。电源模式会跨重启保持。
+应用启动顺序为 Yesense IMU 和电机主控先运行，分别确认 `/imu_data_ros` 与 `/motor/q2w_upper_motor_joint_state` 有数据，再运行 `sim2real_wbc_23dof.py`。验收时先检查串口权限和 CAN 接口对应关系，再检查两路话题和策略日志。电池 CAN 桥接和远程监控有独立服务入口，可随相应应用部署。
 
 ---
 
@@ -932,7 +629,7 @@ GitHub Raw 地址：
 https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh
 ```
 
-脚本自动安装机器人运行环境，默认目标用户为 `ubuntu`，并在该用户的 `.bashrc` 中配置 ROS2 本机通信，同时安装系统级 `python-can 4.6.1`、设置 Jetson MAXN 电源模式，默认结束后重启。它还会验证 ROS2、Python 包、TensorRT、PyTorch CUDA、MAXN 和内核模块。
+脚本自动安装机器人运行环境，默认目标用户为 `ubuntu`，并在该用户的 `.bashrc` 中配置 ROS2 本机通信，同时安装系统级 `python-can 4.6.1`、设置 Jetson MAXN 电源模式，默认结束后重启。验证覆盖 ROS 2、colcon、Python 依赖、TensorRT GPU 运算、MAXN 和内核模块。
 
 ### sanitize.sh
 

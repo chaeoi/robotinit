@@ -18,12 +18,14 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PYTHONUNBUFFERED=1
 
 STEP=0
-TOTAL_STEPS=13
+TOTAL_STEPS=12
 ROS_KEY_TMP=""
+DOWNLOAD_DIR=""
 NVP_REBOOT_HELPER_DIR=""
 
 cleanup() {
   [[ -z "$ROS_KEY_TMP" ]] || rm -f "$ROS_KEY_TMP"
+  [[ -z "$DOWNLOAD_DIR" ]] || rm -rf -- "$DOWNLOAD_DIR"
   if [[ -n "$NVP_REBOOT_HELPER_DIR" ]]; then
     rm -f "$NVP_REBOOT_HELPER_DIR/reboot"
     rmdir "$NVP_REBOOT_HELPER_DIR" 2>/dev/null || true
@@ -74,30 +76,17 @@ run_as_target() {
 echo "Jetson 一键环境配置开始"
 echo "目标用户：$TARGET_USER"
 
-step "安装基础下载、编译和 Python 工具"
+step "安装下载、编译和 Python 工具"
 # samplefs 可能保留旧索引；先刷新，避免已安装包与待安装依赖版本冲突。
 "${APT_GET[@]}" -o APT::Update::Error-Mode=any update
 # basic rootfs 不包含 minimal 中的全部工具，不能依赖镜像预装。
-"${APT_GET[@]}" install -y \
+"${APT_GET[@]}" install -y --no-install-recommends \
   curl \
   gpg \
-  wget \
   unzip \
   xz-utils \
   build-essential \
-  cmake \
-  libpopt-dev \
-  python3-numpy \
-  python3-psutil \
-  python3-empy \
   python3-pip
-
-for command_name in curl gpg lsb_release unzip wget xz; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "错误：缺少环境安装所依赖的系统命令：${command_name}" >&2
-    exit 1
-  fi
-done
 
 step "添加 ROS2 Humble 软件源"
 ROS_KEY_TMP="$(mktemp)"
@@ -108,20 +97,20 @@ rm -f "$ROS_KEY_TMP"
 ROS_KEY_TMP=""
 
 ARCHITECTURE="$(dpkg --print-architecture)"
-UBUNTU_CODENAME="$(lsb_release -sc)"
+# shellcheck disable=SC1091
+source /etc/os-release
 printf '%s\n' \
-  "deb [arch=${ARCHITECTURE} signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirror.nju.edu.cn/ros2/ubuntu ${UBUNTU_CODENAME} main" \
+  "deb [arch=${ARCHITECTURE} signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirror.nju.edu.cn/ros2/ubuntu ${VERSION_CODENAME} main" \
   > /etc/apt/sources.list.d/ros2.list
 
 "${APT_GET[@]}" -o APT::Update::Error-Mode=any update
 
-step "安装并配置 ROS2 Humble"
-"${APT_GET[@]}" install -y \
-  ros-humble-ros-base \
-  python3-colcon-core \
-  python3-colcon-common-extensions \
-  python3-rosdep \
-  python3-argcomplete
+step "安装 ROS2 Humble 和工作空间构建工具"
+"${APT_GET[@]}" install -y --no-install-recommends \
+  ros-humble-ros-core \
+  python3-colcon-bash \
+  python3-colcon-package-selection \
+  python3-colcon-ros
 
 ROS_SETUP_LINE="source /opt/ros/humble/setup.bash"
 ROS_LOCALHOST_LINE="export ROS_LOCALHOST_ONLY=1"
@@ -140,10 +129,11 @@ export ROS_LOCALHOST_ONLY=1
 run_as_target bash -c \
   'source /opt/ros/humble/setup.bash && ros2 --help >/dev/null'
 
-step "安装 CAN、手柄和数据通信依赖"
-"${APT_GET[@]}" install -y \
-  can-utils \
+step "安装 CAN、手柄和策略计算依赖"
+"${APT_GET[@]}" install -y --no-install-recommends \
   python3-pygame \
+  python3-scipy \
+  python3-yaml \
   python3-zmq
 
 python3 -m pip install \
@@ -169,11 +159,12 @@ modprobe can_bcm
 modprobe joydev
 
 step "下载并安装 KH-UCANFD 驱动"
-KH_WORK_DIR="/tmp/KH-UCANFD"
+DOWNLOAD_DIR="$(mktemp -d)"
+KH_WORK_DIR="${DOWNLOAD_DIR}/KH-UCANFD"
 KH_ZIP="${KH_WORK_DIR}/KH-UCANFD_Linux_SDK.zip"
 mkdir -p "$KH_WORK_DIR"
 
-wget --no-verbose -O "$KH_ZIP" \
+curl -fL --retry 3 --retry-all-errors -o "$KH_ZIP" \
   https://gitee.com/ChengDu-KunHong/KH-UCANFD_Linux_SDK/releases/download/latest/KH-UCANFD_Linux_SDK.zip
 unzip -o "$KH_ZIP" -d "$KH_WORK_DIR"
 
@@ -203,18 +194,26 @@ fi
 bash "$KH_BUILD_SCRIPT"
 modprobe kcan
 
-step "安装 CUDA、cuDNN 和 TensorRT"
-"${APT_GET[@]}" install -y \
-  nvidia-cuda \
-  nvidia-cudnn \
+step "安装 CUDA、cuDNN 和 TensorRT 运行库"
+"${APT_GET[@]}" install -y --no-install-recommends \
+  cuda-cudart-12-6 \
   cuda-cupti-12-6 \
+  cuda-nvrtc-12-6 \
   cuda-nvtx-12-6 \
-  tensorrt \
+  libcublas-12-6 \
+  libcudla-12-6 \
+  libcufft-12-6 \
+  libcurand-12-6 \
+  libcusolver-12-6 \
+  libcusparse-12-6 \
+  libnvjitlink-12-6 \
+  nvidia-cudnn \
+  python3-libnvinfer \
   nvidia-l4t-dla-compiler
 ldconfig
 
 step "安装 cuSPARSELt 0.6.2.3"
-CUSPARSELT_DIR="/tmp/codex-cusparselt-0.6.2.3"
+CUSPARSELT_DIR="${DOWNLOAD_DIR}/cusparselt"
 CUSPARSELT_ARCHIVE="libcusparse_lt-linux-sbsa-0.6.2.3-archive"
 CUSPARSELT_TAR="${CUSPARSELT_ARCHIVE}.tar.xz"
 mkdir -p "$CUSPARSELT_DIR"
@@ -224,27 +223,18 @@ curl -fL --retry 3 --retry-all-errors -O \
   "https://developer.download.nvidia.cn/compute/cusparselt/redist/libcusparse_lt/linux-sbsa/${CUSPARSELT_TAR}"
 tar -xf "$CUSPARSELT_TAR"
 
-cp -a \
-  "${CUSPARSELT_ARCHIVE}/include/." \
-  /usr/local/cuda/include/
-cp -a \
-  "${CUSPARSELT_ARCHIVE}/lib/." \
-  /usr/local/cuda/targets/aarch64-linux/lib/
+cp -a --no-preserve=ownership \
+  "${CUSPARSELT_ARCHIVE}"/lib/libcusparseLt.so.0* \
+  /usr/local/cuda-12.6/targets/aarch64-linux/lib/
 ldconfig
 
-step "安装 Jetson CUDA 版 PyTorch"
+step "安装 Jetson CUDA 版 PyTorch 和 NumPy 1.24.4"
 run_as_target python3 -m pip install \
   --user \
   --no-input \
   --no-cache-dir \
+  "numpy==1.24.4" \
   "https://developer.download.nvidia.cn/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl"
-
-step "安装项目指定的 NumPy 1.24.4"
-run_as_target python3 -m pip install \
-  --user \
-  --no-input \
-  --no-cache-dir \
-  "numpy==1.24.4"
 
 step "验证安装结果"
 grep -Fqx "$ROS_LOCALHOST_LINE" "$TARGET_BASHRC"
@@ -262,23 +252,46 @@ import numpy
 import pygame
 import tensorrt
 import torch
+import yaml
 import zmq
+from scipy.spatial.transform import Rotation
 
 assert can.__version__ == "4.6.1"
 assert numpy.__version__ == "1.24.4"
 assert torch.cuda.is_available()
+assert numpy.allclose(Rotation.identity().as_matrix(), numpy.eye(3))
+
+logger = tensorrt.Logger(tensorrt.Logger.ERROR)
+builder = tensorrt.Builder(logger)
+network = builder.create_network(0)
+tensor = network.add_input("input", tensorrt.float32, (1, 4))
+output = network.add_identity(tensor).get_output(0)
+output.name = "output"
+network.mark_output(output)
+serialized = builder.build_serialized_network(network, builder.create_builder_config())
+assert serialized is not None
+runtime = tensorrt.Runtime(logger)
+engine = runtime.deserialize_cuda_engine(serialized)
+context = engine.create_execution_context()
+input_gpu = torch.arange(4, device="cuda", dtype=torch.float32).reshape(1, 4)
+output_gpu = torch.empty_like(input_gpu)
+assert context.set_tensor_address("input", input_gpu.data_ptr())
+assert context.set_tensor_address("output", output_gpu.data_ptr())
+assert context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+torch.cuda.synchronize()
+assert torch.equal(input_gpu, output_gpu)
 
 print("python-can:", can.__version__)
 print("NumPy:", numpy.__version__)
 print("Pygame:", pygame.version.ver)
+print("PyYAML:", yaml.__version__)
 print("pyzmq:", zmq.__version__)
 print("PyTorch:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("TensorRT:", tensorrt.__version__)
+print("TensorRT:", tensorrt.__version__, "CUDA inference passed")
 PY
 
 run_as_target bash -c \
-  'source /opt/ros/humble/setup.bash && ros2 --help >/dev/null'
+  'source /opt/ros/humble/setup.bash && colcon build --help | grep -F -- "  --packages-select " >/dev/null'
 modprobe can
 modprobe can_raw
 modprobe can_bcm

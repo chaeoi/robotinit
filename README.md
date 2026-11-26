@@ -45,13 +45,13 @@ backup.sh          打包黄金镜像
 finalize.sh        归一化 NVMe 容量并为每台目标机生成独立身份
 ```
 
-母机镜像读取和目标机刷写按 [部署手册](docs/guide.md) 执行；`backup.sh` 只负责打包读取完成的黄金镜像。每台恢复后的目标机都必须运行 `finalize.sh`，由它先归一化 NVMe 容量，再完成设备身份初始化。
+目标机恢复后，先运行 `finalize.sh` 完成 NVMe 容量归一化和身份初始化，再部署应用工作空间、模型和自启服务。镜像读取、归档和恢复步骤见 [部署手册](docs/guide.md)。
 
 ## 脚本
 
 | 脚本 | 运行位置 | 作用 |
 | --- | --- | --- |
-| [`provision.sh`](scripts/provision.sh) | 正常启动的 Jetson | 安装 ROS 2、系统级 `python-can`、KH-UCANFD、CUDA、TensorRT 和 PyTorch，并配置 ROS 本机通信与 MAXN 电源模式 |
+| [`provision.sh`](scripts/provision.sh) | 正常启动的 Jetson | 安装 ROS 2、KH-UCANFD、CUDA 运行库、TensorRT Python 绑定和 PyTorch，验证 GPU 推理并配置 MAXN |
 | [`sanitize.sh`](scripts/sanitize.sh) | 黄金母机 | 检查网络绑定，清除不应被克隆的机器状态，并自动关机 |
 | [`backup.sh`](scripts/backup.sh) | x86_64 Ubuntu 刷机主机 | 按日期和序号打包完整 `images/`，并生成 MD5 |
 | [`finalize.sh`](scripts/finalize.sh) | 恢复后的目标机 | 归一化 NVMe 容量，设置 hostname，重建 machine-id 和 SSH host key，并自动重启 |
