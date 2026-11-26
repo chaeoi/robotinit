@@ -1,21 +1,19 @@
 # Jetson AGX Orin 刷机、环境配置与黄金镜像部署
 
-本仓库记录 NVIDIA Jetson AGX Orin 从最小系统刷机、机器人运行环境安装、常用工具配置，到黄金母机备份和目标机恢复的完整流程。
-
-本文档整合刷机、环境配置、常用工具和黄金镜像部署流程，支持 basic 和 minimal 无桌面 rootfs。仓库脚本的在线下载统一使用 GitHub Raw 源文件地址。
+从空白 Jetson 开始，依次完成刷机、运行环境安装、常用工具配置和黄金镜像制作。已有黄金镜像时，从第四章第 7 步开始恢复并初始化目标机。
 
 ## 适用环境
 
-- NVIDIA Jetson AGX Orin
+- NVIDIA Jetson AGX Orin DevKit
 - Jetson Linux R36.5
-- Ubuntu 22.04
+- Ubuntu 22.04 Jammy，使用 Basic 无桌面 rootfs
 - 外置 NVMe：`nvme0n1`
 - 默认用户：`ubuntu`
-- ROS2 Humble
+- ROS 2 Humble
 - Python 3.10
-- 刷机主机：x86_64 Ubuntu
+- 刷机主机：x86_64 Ubuntu 22.04，用于构建 Jammy rootfs
 
-不同 Jetson Linux 小版本的 BSP、分区配置和软件包可能不同。执行前应确认目标设备确实使用 R36.5，并确保刷机主机上的 `Linux_for_Tegra` 来自同一版本。
+刷机、备份和恢复沿用本手册准备的 R36.5.0 `Linux_for_Tegra`。第二章通过 APT 更新 Jetson 上的 R36.5 系列软件包。实机记录中的 Jetson 软件包更新到了 R36.5.2。
 
 ## 仓库结构
 
@@ -48,7 +46,7 @@ GitHub Raw 地址使用 `main` 分支。只有文件已经提交并推送到 Git
 
 ## 一、刷入最小 Jetson Linux 系统
 
-本章保持既定刷机步骤的执行顺序。
+第 1–12 步在 x86_64 Ubuntu 刷机主机上操作。Jetson 刷入 NVMe 并正常启动后，通过 USB SSH 登录，再在 Jetson 上配置联网。
 
 ### 1. 更新刷机主机的软件源
 
@@ -60,17 +58,35 @@ sudo apt update
 
 ### 2. 安装刷机依赖
 
+在刷机主机安装以下软件包。该列表沿用当前 BSP 已跑通的安装配置。NVIDIA 的 `tools/l4t_flash_prerequisites.sh` 还覆盖其他板型和刷机方式。 [NVIDIA 刷机依赖说明](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/FlashingSupport.html#installing-the-flash-requirements)
+
 ```bash
 sudo apt install -y libxml2-utils python3 sshpass abootimg nfs-kernel-server \
                     binfmt-support binutils qemu-user-static device-tree-compiler \
                     lbzip2 lz4 whois xmlstarlet zstd
 ```
 
-这些依赖分别用于解析分区 XML、运行 NVIDIA Python 脚本、通过 SSH 控制 initrd、生成启动镜像、提供 NFS、在 x86 主机处理 ARM64 rootfs，以及编译设备树。
+| 软件包 | 用途 |
+| --- | --- |
+| `libxml2-utils` | 提供 `xmllint`，NVIDIA 刷机工具用它查询分区布局 XML。 |
+| `python3` | 执行 BSP 中的 `tegraflash.py` 等 Python 工具。 |
+| `sshpass` | 让刷机主机通过 SSH 自动连接 Jetson 的临时 initrd。 |
+| `abootimg` | 提取 `recovery.img` 中的内核和 ramdisk，供刷机工具生成临时 initrd。 |
+| `nfs-kernel-server` | 为 USB initrd 刷机、备份和恢复提供文件传输服务。 |
+| `binfmt-support`、`qemu-user-static` | 在 x86 主机上注册并运行 ARM64 程序，供 rootfs 构建、安装 NVIDIA 软件包和创建默认用户使用。 |
+| `binutils` | 提供 `strings`，initrd 工具用它从 `kernel/Image` 提取内核版本。 |
+| `device-tree-compiler` | 提供设备树编译工具。当前 `flash.sh` 优先使用 BSP 自带的 `kernel/dtc`，系统包来自 NVIDIA 通用依赖清单。 |
+| `lbzip2` | 供 `apply_binaries.sh` 解包 NVIDIA 组件及内核头文件。 |
+| `lz4` | 提供 `lz4c`，供 BSP 的 T194 BPMP 设备树分支使用。当前 AGX Orin 流程没有进入该分支。 |
+| `whois` | 提供 `mkpasswd`，供 NVIDIA 的 `nv_preseed.sh` 使用。第 10 步的 `l4t_create_default_user.sh` 使用 `openssl passwd`。 |
+| `xmlstarlet` | 供 `flash.sh` 的 `-S` 选项修改 APP 分区 XML。第 12 步使用 BSP 的默认大小。 |
+| `zstd` | 压缩和解压刷机及备份的分区镜像，并在打包前校验 APP 归档。 |
 
-`binutils` 在 x86_64 刷机主机上安装，NVIDIA 的 `tools/l4t_flash_prerequisites.sh` 也列出了该依赖。
+新装的刷机主机还需核对已有工具。`wget` 下载基础系统，`bzip2` 供 `tar` 生成 `sample_fs.tbz2`，`cpio` 用于重打包 initrd，`cpp` 用于预处理板级配置，`openssl` 用于生成默认用户的密码哈希，`usbutils` 提供第 11 步的 `lsusb`。如果下面少输出了某一条命令的路径，就补装对应的软件包。
 
-`nfs-kernel-server` 在后续黄金镜像备份和恢复阶段仍会使用，因此不要在刷机完成后删除。
+```bash
+command -v wget bzip2 cpio cpp openssl lsusb
+```
 
 ### 3. 下载 Jetson Linux R36.5 BSP
 
@@ -78,12 +94,12 @@ sudo apt install -y libxml2-utils python3 sshpass abootimg nfs-kernel-server \
 https://developer.nvidia.com/downloads/embedded/l4t/r36_release_v5.0/release/Jetson_Linux_r36.5.0_aarch64.tbz2
 ```
 
-这是 Jetson Linux R36.5 Driver Package。下载完成后，应确认文件名为 `Jetson_Linux_R36.5.0_aarch64.tbz2`。
+将 Jetson Linux R36.5.0 Driver Package 保存到刷机主机的用户主目录。下载文件名为 `Jetson_Linux_r36.5.0_aarch64.tbz2`。
 
 ### 4. 解压 BSP
 
 ```bash
-tar xf Jetson_Linux_R36.5.0_aarch64.tbz2
+tar xf "$HOME/Jetson_Linux_r36.5.0_aarch64.tbz2" -C "$HOME"
 ```
 
 解压后会生成 `Linux_for_Tegra` 目录。后续制作 rootfs、刷机、备份和恢复都从该目录执行。
@@ -91,19 +107,21 @@ tar xf Jetson_Linux_R36.5.0_aarch64.tbz2
 ### 5. 进入 BSP 目录
 
 ```bash
-cd Linux_for_Tegra
+cd "$HOME/Linux_for_Tegra"
 ```
 
 后续相对路径都以当前 `Linux_for_Tegra` 为基准。切换终端后，应重新确认当前目录，避免在错误的 BSP 版本中执行命令。
 
-### 6. 生成 Ubuntu Jammy basic rootfs
+### 6. 生成 Ubuntu Jammy Basic rootfs
 
-basic 的包列表需要补上 `gdisk`：后续 NVIDIA 会从 BSP 的 `rootfs/usr/sbin/sgdisk` 复制工具到备份/恢复 initrd，只在正常启动的 Jetson 上安装并不能补齐这个目录。
+Basic 的包列表需要补上 `gdisk`。后续 NVIDIA 会从 BSP 的 `rootfs/usr/sbin/sgdisk` 复制该工具到备份和恢复用的 initrd，因此要在生成 rootfs 时加入。
 
 ```bash
 grep -Fqx gdisk tools/samplefs/nvubuntu-jammy-basic-aarch64-packages || \
   echo gdisk | sudo tee -a tools/samplefs/nvubuntu-jammy-basic-aarch64-packages
+```
 
+```bash
 sudo ./tools/samplefs/nv_build_samplefs.sh \
      --abi aarch64 \
      --distro ubuntu \
@@ -118,9 +136,9 @@ sudo ./tools/samplefs/nv_build_samplefs.sh \
 - `--version jammy`：对应 Ubuntu 22.04。
 - `--flavor basic`：生成只保留 BSP 和 NVIDIA 容器基础依赖的无桌面系统。
 
-basic 比 minimal 更精简，不预装 NetworkManager 等工具。首次联网按第 13 步通过 USB SSH 转发 SOCKS 代理安装 NetworkManager，运行环境脚本再补全下载、解压、编译和 Python 依赖。也可以将此参数改回 `--flavor minimal`，后续安装步骤同样适用。两种 flavor 的区别见 [NVIDIA rootfs 文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/RootFileSystem.html#basic-flavor-root-file-system)。
+刷入 Basic 后，通过 USB SSH 安装 NetworkManager，再连接 Wi-Fi。详见本章第 13、14 步。 [NVIDIA Basic rootfs 文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/RootFileSystem.html#basic-flavor-root-file-system)
 
-命令完成后，samplefs 工具会生成后续要解压进 `rootfs/` 的归档文件。
+命令完成后应得到 `tools/samplefs/sample_fs.tbz2`。确认文件已生成，再清空旧的 rootfs 目录。
 
 ### 7. 清空 BSP 当前 rootfs
 
@@ -128,9 +146,7 @@ basic 比 minimal 更精简，不预装 NetworkManager 等工具。首次联网�
 sudo rm -rf rootfs/*
 ```
 
-这条命令会删除 `Linux_for_Tegra/rootfs/` 中现有内容。执行前必须确认当前位于正确的 `Linux_for_Tegra` 目录。
-
-它不会删除整台刷机主机的根目录，但路径使用错误会造成严重数据损失。
+执行前用 `pwd` 确认位于第 5 步进入的 `Linux_for_Tegra` 目录。这条命令删除该 BSP 的旧 rootfs，使下一步能够解出一份干净的系统。
 
 ### 8. 解压 rootfs
 
@@ -153,7 +169,7 @@ sudo tar xpf tools/samplefs/sample_fs.tbz2 -C rootfs/
 sudo ./apply_binaries.sh
 ```
 
-该脚本向 Ubuntu rootfs 中安装 NVIDIA 驱动、固件、库、内核模块及 Jetson 平台组件。只解压 Ubuntu rootfs 而不执行该步骤，系统无法作为完整 Jetson Linux 使用。
+该脚本向 Ubuntu rootfs 安装 NVIDIA 驱动、固件、库、内核模块和 Jetson 平台组件。完成后可用 `test -x rootfs/usr/sbin/sgdisk` 核对备份和恢复需要的工具已写入 BSP。
 
 ### 10. 创建默认用户
 
@@ -179,7 +195,7 @@ sudo tools/l4t_create_default_user.sh \
 ### 11. 确认设备进入 Recovery 模式
 
 ```bash
-lsusb | grep -i nvidia
+lsusb | grep -i 'NVIDIA.*APX'
 ```
 
 Jetson 通过刷机 USB-C 连接 x86 主机并进入 Force Recovery 后，`lsusb` 应显示 NVIDIA APX 设备。没有输出时不要继续刷机，应先检查 USB 线、接口、供电和 Recovery 操作。
@@ -206,33 +222,31 @@ sudo ./tools/kernel_flash/l4t_initrd_flash.sh \
 
 实测该命令会写入目标 NVMe、内部 eMMC 和 QSPI。刷机前先备份需要保留的数据，尤其是内部 eMMC。第四章的 `-e nvme0n1` 黄金镜像只包含 NVMe 和 QSPI。刷机完成后让 Jetson 正常启动。
 
-### 13. 通过 USB Device Mode 登录
+### 13. 通过 USB Device Mode 登录并安装 NetworkManager
 
-```bash
-ssh ubuntu@192.168.55.1
-```
-
-正常启动后，Jetson 会通过刷机 USB-C 提供 USB 虚拟网卡，设备地址为 `192.168.55.1`。登录密码是创建默认用户时设置的密码。
-
-如果使用 basic rootfs，`nmcli` 尚未安装。在刷机电脑上使用下面的命令登录，向 Jetson 的回环地址提供 SOCKS 代理；保持该 SSH 会话连接：
+Basic 首次启动后，Jetson 通过刷机 USB-C 提供地址为 `192.168.55.1` 的 USB 网络。用第 10 步设置的密码登录。以下命令在刷机主机执行，登录的同时为 Jetson 提供临时 SOCKS 代理。保持该会话连接。
 
 ```bash
 ssh -o ExitOnForwardFailure=yes -R 127.0.0.1:1080 ubuntu@192.168.55.1
 ```
 
-在这个 Jetson SSH 会话中执行，借用刷机电脑的网络刷新软件包索引并安装 Wi-Fi 管理工具：
+在这个 Jetson SSH 会话里刷新软件包索引并安装 `network-manager`。它提供下一步扫描、连接和保存 Wi-Fi 所需的 `nmcli`。
 
 ```bash
 sudo apt-get \
   -o Acquire::http::Proxy="socks5h://127.0.0.1:1080" \
   -o Acquire::https::Proxy="socks5h://127.0.0.1:1080" \
   -o APT::Update::Error-Mode=any update
+```
 
+```bash
 sudo apt-get \
   -o Acquire::http::Proxy="socks5h://127.0.0.1:1080" \
   -o Acquire::https::Proxy="socks5h://127.0.0.1:1080" \
   install -y --no-install-recommends network-manager
+```
 
+```bash
 sudo systemctl enable --now NetworkManager
 ```
 
@@ -244,6 +258,9 @@ sudo systemctl enable --now NetworkManager
 
 ```bash
 nmcli device wifi list --rescan yes
+```
+
+```bash
 sudo nmcli --wait 60 device wifi connect "Cudy-89D0" password "13594954"
 ```
 
@@ -255,58 +272,370 @@ NetworkManager 会创建并保存 `Cudy-89D0` 的连接 profile。该 profile �
 
 ## 二、安装机器人运行环境
 
-适用环境：
+在已联网的 Jetson 上以 `ubuntu` 登录。完成第 0 步并重启后，执行自动化脚本或按第 1–13 步手动安装。按顺序逐块执行命令，上一条成功后再继续。用到同一变量的命令在同一个终端运行。
 
-- NVIDIA Jetson AGX Orin
-- Ubuntu 22.04 / Jetson Linux R36.5
-- Python 3.10
-- ROS2 Humble
-- 用户名：`ubuntu`
-
-### 1. 更新 Jetson 系统
+### 0. 更新系统并安装前置组件
 
 ```bash
 sudo apt-get -o APT::Update::Error-Mode=any update
+```
+
+```bash
 sudo apt-get install -y --no-install-recommends fwupd udisks2 i2c-tools curl
+```
+
+```bash
 sudo apt-get upgrade -y
+```
+
+```bash
 sudo reboot
 ```
 
-`fwupd`、`udisks2` 和 `i2c-tools` 用于 Jetson bootloader 升级。Basic 系统曾因缺少 `udisks2` 出现 `UEFI ESP partition not detected or configured`。如果遇到该错误，先补齐上述软件包，再执行 `sudo dpkg --configure -a` 并重启。重启后应先确认当前内核对应的 `/lib/modules/$(uname -r)/build` 可用，KH-UCANFD 驱动会针对正在运行的内核编译。
+- `fwupd` 提供 Jetson bootloader 升级使用的 `fwupdmgr` 和 `fwupdtool`。
+- `udisks2` 帮助 `fwupd` 识别 EFI 系统分区。Basic 实机曾因缺少它而报 `UEFI ESP partition not detected or configured`。补齐软件包并核对 ESP 挂载后，可用 `sudo dpkg --configure -a` 完成中断的升级。
+- `i2c-tools` 提供 bootloader 配置读取板卡信息所用的 `i2cget`。
+- `curl` 用于后续下载配置脚本、ROS 2 签名密钥、驱动和推理依赖。
 
-### 2. 安装策略运行环境
+重启使更新后的 bootloader 和内核生效。重新登录后，确认运行中的内核和编译目录。KH-UCANFD 将使用这个目录编译驱动。
 
-重新登录 Jetson 后执行：
+```bash
+uname -r
+```
+
+```bash
+test -d "/lib/modules/$(uname -r)/build"
+```
+
+### 自动化脚本
+
+第 0 步检查通过后，在 Jetson 上执行以下命令。脚本安装并验证运行环境，设置 MAXN 后自动重启。重新登录后直接进入第三章。
 
 ```bash
 curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotinit/main/scripts/provision.sh | sudo bash
 ```
 
-| 用途 | 脚本安装或配置的内容 |
+### 手动安装步骤
+
+选择手动安装时，从第 1 步开始。
+
+### 1. 安装基础下载和编译工具
+
+```bash
+sudo apt-get install -y --no-install-recommends curl gpg unzip xz-utils build-essential
+```
+
+- `curl` 用于下载 ROS 2 签名密钥和后续安装文件。第 0 步已安装时，APT 会复用。
+- `gpg` 将 ROS 2 软件源的签名密钥转成 APT 使用的二进制 keyring。
+- `unzip` 解开 KH-UCANFD SDK 的 ZIP 包。
+- `xz-utils` 提供 cuSPARSELt 的 `.tar.xz` 归档所需的解压程序。
+- `build-essential` 提供 GCC、G++ 和 Make，用于编译 `kcan` 和项目里的 ROS 2 C++ 节点。
+
+### 2. 安装基础 Python 工具
+
+```bash
+sudo apt-get install -y --no-install-recommends python3-pip
+```
+
+`python3-pip` 用于安装系统级 `python-can`，以及 `ubuntu` 用户下的 NVIDIA PyTorch wheel 和固定版本的 NumPy。
+
+### 3. 安装 ROS 2 Humble
+
+先下载南京大学 ROS 2 镜像的签名密钥并写入 APT keyring，再添加 Ubuntu Jammy 软件源。
+
+```bash
+ros_key="$(mktemp)"
+```
+
+```bash
+curl -fsSL https://mirror.nju.edu.cn/rosdistro/ros.asc |
+  gpg --dearmor --batch --yes --output "$ros_key"
+```
+
+```bash
+sudo install -m 0644 "$ros_key" /usr/share/keyrings/ros-archive-keyring.gpg
+```
+
+```bash
+unlink "$ros_key"
+```
+
+密钥写入成功后，登记软件源。
+
+```bash
+source /etc/os-release
+```
+
+```bash
+printf '%s\n' \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] https://mirror.nju.edu.cn/ros2/ubuntu ${VERSION_CODENAME} main" |
+  sudo tee /etc/apt/sources.list.d/ros2.list >/dev/null
+```
+
+APT 使用 `signed-by` 指定的密钥校验该软件源。添加软件源后重新刷新索引，再安装 ROS 2 和工作空间构建组件。
+
+```bash
+sudo apt-get -o APT::Update::Error-Mode=any update
+```
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  ros-humble-ros-core \
+  python3-colcon-bash \
+  python3-colcon-package-selection \
+  python3-colcon-ros
+```
+
+- `ros-humble-ros-core` 提供 `ros2`、`rclcpp`、`rclpy`、基础消息以及构建接口所需的 ament 和 rosidl。Yesense、电机主控和策略通过它们交换数据。
+- `python3-colcon-bash` 生成工作空间的 Bash 环境文件，使启动脚本可加载 `install/setup.bash`。
+- `python3-colcon-package-selection` 提供 `--packages-select`，用于只编译指定的 IMU 或电机包。
+- `python3-colcon-ros` 提供对 ROS 工作空间的识别和构建支持，并通过依赖安装 colcon 主程序和相应的 CMake 扩展。
+
+以 `ubuntu` 执行以下命令，让当前及后续打开的 Bash 终端可直接使用 ROS 2，并将节点通信限制在本机。
+
+```bash
+grep -Fxq 'source /opt/ros/humble/setup.bash' ~/.bashrc ||
+  printf '\n%s\n' 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
+```
+
+```bash
+grep -Fxq 'export ROS_LOCALHOST_ONLY=1' ~/.bashrc ||
+  printf '%s\n' 'export ROS_LOCALHOST_ONLY=1' >> ~/.bashrc
+```
+
+```bash
+source /opt/ros/humble/setup.bash
+```
+
+```bash
+export ROS_LOCALHOST_ONLY=1
+```
+
+```bash
+ros2 --help
+```
+
+```bash
+colcon build --help | grep -F -- '  --packages-select '
+```
+
+### 4. 安装 CAN、手柄和策略所用的 Python 库
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  python3-pygame python3-scipy python3-yaml python3-zmq
+```
+
+```bash
+sudo python3 -m pip install --no-input --no-cache-dir 'python-can==4.6.1'
+```
+
+- `python3-pygame` 读取 USB 手柄摇杆和按键。
+- `python3-scipy` 为策略提供姿态旋转计算。
+- `python3-yaml` 用于读取策略的 YAML 配置。
+- `python3-zmq` 用于发布控制和关节遥测。
+- `python-can` 提供 Python 工具使用的 SocketCAN 接口。安装到系统 Python 路径后，`ubuntu` 和通过 `sudo python3` 运行的 CAN 工具可以导入同一版本。
+
+### 5. 配置 IMU 和手柄访问权限
+
+```bash
+sudo usermod -aG dialout,input ubuntu
+```
+
+`dialout` 允许 `ubuntu` 访问 Yesense IMU 对应的 `/dev/ttyACM0`，`input` 用于读取手柄设备。IMU 的 `cdc_acm` 由 Jetson 内核提供。下一步重启后，新用户组生效。
+
+### 6. 禁用 Jetson 自带的 mttcan
+
+在使用 KH-UCANFD 的主控上，写入黑名单，避免 Jetson 自带的 `mttcan` 自动加载。重启后重新登录。
+
+```bash
+printf '%s\n' 'blacklist mttcan' | sudo tee /etc/modprobe.d/denylist-mttcan.conf
+```
+
+```bash
+sudo reboot
+```
+
+### 7. 重启后加载 CAN 和手柄内核模块
+
+```bash
+sudo modprobe can
+```
+
+```bash
+sudo modprobe can_raw
+```
+
+```bash
+sudo modprobe can_bcm
+```
+
+```bash
+sudo modprobe joydev
+```
+
+`can` 提供内核 CAN 支持，`can_raw` 提供 SocketCAN 的 RAW socket，`can_bcm` 提供 CAN Broadcast Manager，`joydev` 为手柄提供 `/dev/input/js*` 接口。
+
+### 8. 安装 KH-UCANFD 驱动
+
+在临时目录下载并解压 SDK。`build.sh` 根据运行中的 Jetson 内核构建并安装 `kcan`。确认编译目录和安装入口都存在，再运行安装。
+
+```bash
+sdk_dir="$(mktemp -d)"
+```
+
+```bash
+curl -fL --retry 3 -o "$sdk_dir/KH-UCANFD_Linux_SDK.zip" \
+  https://gitee.com/ChengDu-KunHong/KH-UCANFD_Linux_SDK/releases/download/latest/KH-UCANFD_Linux_SDK.zip
+```
+
+```bash
+unzip -o "$sdk_dir/KH-UCANFD_Linux_SDK.zip" -d "$sdk_dir"
+```
+
+```bash
+kh_build_script="$(find "$sdk_dir" -mindepth 2 -maxdepth 3 -type f -name build.sh \
+  -path '*/KH-UCANFD_Linux_SDK*/*' -print | sort -V | tail -n 1)"
+```
+
+```bash
+test -d "/lib/modules/$(uname -r)/build"
+```
+
+```bash
+test -f "$kh_build_script"
+```
+
+```bash
+sudo bash "$kh_build_script"
+```
+
+```bash
+sudo modprobe kcan
+```
+
+安装成功后，写入开机加载列表。`kcan` 负责把 KH-UCANFD 设备注册为 SocketCAN 接口，有转接器插入时可用 `ip -br link show type can` 查看。
+
+```bash
+printf '%s\n' can can_raw can_bcm joydev kcan |
+  sudo tee /etc/modules-load.d/q2-robot.conf >/dev/null
+```
+
+```bash
+modinfo -F version kcan
+```
+
+### 9. 安装 CUDA、cuDNN 和 TensorRT 运行库
+
+```bash
+sudo apt-get install -y --no-install-recommends \
+  cuda-cudart-12-6 cuda-cupti-12-6 cuda-nvrtc-12-6 cuda-nvtx-12-6 \
+  libcublas-12-6 libcudla-12-6 libcufft-12-6 libcurand-12-6 \
+  libcusolver-12-6 libcusparse-12-6 libnvjitlink-12-6 \
+  nvidia-cudnn python3-libnvinfer nvidia-l4t-dla-compiler
+```
+
+```bash
+sudo ldconfig
+```
+
+| 软件包 | 安装原因 |
 | --- | --- |
-| ROS 2 和工作空间构建 | Humble `ros-core`、选包构建及生成 Bash 环境所需的 colcon 扩展。Yesense 和电机主控的启动脚本会调用 `colcon build --packages-select` |
-| IMU | Jetson 内核随附的 `cdc_acm` 将 Yesense USB IMU 暴露为 `/dev/ttyACM0`，`dialout` 授权部署用户访问串口。Yesense 工作空间随项目提供串口库 |
-| 电机和手柄 | KH-UCANFD 的 `kcan` 把 USB-CANFD 转接器注册为 SocketCAN 网口。系统级 `python-can 4.6.1` 兼容使用 `sudo python3` 的项目工具。Pygame、`joydev` 和 `input` 支持手柄读取 |
-| Python 策略 | NumPy 1.24.4、SciPy、PyYAML 和 PyZMQ。策略使用 SciPy 处理姿态旋转，通过 ZeroMQ 发布遥测 |
-| GPU 推理 | CUDA 12.6 运行库、cuDNN、cuSPARSELt 动态库、TensorRT Python 绑定和 Jetson 版 PyTorch。TensorRT 从 ONNX 构建引擎，PyTorch 提供 CUDA 张量并支持 TorchScript 后端 |
+| `cuda-cudart-12-6` | 提供 CUDA 设备、内存和执行流所用的运行时。 |
+| `cuda-cupti-12-6`、`cuda-nvtx-12-6` | 提供 Jetson 版 PyTorch 加载的 `libcupti.so.12` 和 `libnvToolsExt.so.1`。 |
+| `cuda-nvrtc-12-6`、`libnvjitlink-12-6` | 为 CUDA 库提供运行时编译和链接支持。 |
+| `libcublas-12-6`、`libcufft-12-6`、`libcurand-12-6`、`libcusolver-12-6`、`libcusparse-12-6` | 提供已验证运行环境中的矩阵乘法、FFT、随机数、线性求解和稀疏运算库。 |
+| `libcudla-12-6`、`nvidia-l4t-dla-compiler` | 提供 Jetson TensorRT 引擎库链接所需的 `libcudla.so.1` 和 `libnvdla_compiler.so`。 |
+| `nvidia-cudnn` | 安装 NVIDIA PyTorch 所需的 cuDNN GPU 算子库。 |
+| `python3-libnvinfer` | 提供 `import tensorrt` 所需的 Python 绑定，并通过依赖安装推理引擎、插件和 ONNX 解析器。 |
 
-安装结束时，脚本会在目标用户下跑一次 TensorRT GPU 运算，检查 Python 依赖、ROS 2、colcon 和内核模块，并设置 MAXN 电源模式后重启。升级到新内核后，应先重启进入新内核，再运行脚本重建 `kcan`。
+`ldconfig` 更新动态链接库缓存。当前 Python 策略使用这些运行库从 ONNX 构建 TensorRT 引擎并推理。
 
-策略依赖使用 `--no-install-recommends` 安装。脚本逐项安装 CUDA 运行库，省去当前策略用不到的 NPP、cuFile 和 nvFatbin。`python3-libnvinfer` 的依赖包含 TensorRT 引擎、插件和 ONNX 解析库。C++ 策略若需现场编译，应按项目声明补齐开发包。`can-utils` 用于 CAN 诊断，可按需安装。
+### 10. 安装 cuSPARSELt
 
-### 3. 部署应用并检查自启链路
+当前 Jetson PyTorch wheel 加载 `libcusparseLt.so.0`。将 cuSPARSELt 0.6.2.3 归档中的这个动态库及版本文件复制到 CUDA 12.6 库目录。
 
-恢复镜像并完成 `finalize.sh` 后，将 Yesense 工作空间、电机主控工作空间、策略代码、模型与相应机器配置放到应用启动脚本使用的路径。核对 YAML 中的模型路径，首次启动会从 ONNX 在目标机生成 TensorRT 引擎。电机工作空间首次编译需要获取构建文件指定的 spdlog 版本，现场无法访问源码仓库时随应用部署构建依赖。
+```bash
+gpu_dir="$(mktemp -d)"
+```
 
-无桌面设备上的 `robot-stack.service` 应从 `multi-user.target` 启用。如果沿用桌面版 unit，移除 `After=graphical.target`，将 `WantedBy` 改为 `multi-user.target` 后重新启用。服务脚本需加载 `/opt/ros/humble/setup.bash`，unit 需设置 `ROS_LOCALHOST_ONLY=1`。首次自启前要确认部署用户可访问串口，电机启动脚本能在无终端时配置实际使用的 CAN 接口。
+```bash
+cusparselt=libcusparse_lt-linux-sbsa-0.6.2.3-archive
+```
 
-应用启动顺序为 Yesense IMU 和电机主控先运行，分别确认 `/imu_data_ros` 与 `/motor/q2w_upper_motor_joint_state` 有数据，再运行 `sim2real_wbc_23dof.py`。验收时先检查串口权限和 CAN 接口对应关系，再检查两路话题和策略日志。电池 CAN 桥接和远程监控有独立服务入口，可随相应应用部署。
+```bash
+curl -fL --retry 3 -o "$gpu_dir/$cusparselt.tar.xz" \
+  "https://developer.download.nvidia.cn/compute/cusparselt/redist/libcusparse_lt/linux-sbsa/$cusparselt.tar.xz"
+```
+
+```bash
+tar -xf "$gpu_dir/$cusparselt.tar.xz" -C "$gpu_dir"
+```
+
+```bash
+sudo cp -a --no-preserve=ownership \
+  "$gpu_dir/$cusparselt"/lib/libcusparseLt.so.0* \
+  /usr/local/cuda-12.6/targets/aarch64-linux/lib/
+```
+
+```bash
+sudo ldconfig
+```
+
+### 11. 安装 Jetson CUDA 版 PyTorch
+
+以 `ubuntu` 执行，安装在当前用户的 Python 环境中。这个 NVIDIA wheel 对应 ARM64 和 Python 3.10。策略用它管理 TensorRT 的 CUDA 张量，也可用它加载 TorchScript 模型。NumPy 与 PyTorch 在同一条命令安装，以锁定该 wheel 已验证的 NumPy 版本。
+
+```bash
+python3 -m pip install --user --no-input --no-cache-dir 'numpy==1.24.4' \
+  'https://developer.download.nvidia.cn/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl'
+```
+
+### 12. 检查 NumPy 和 Python 推理环境
+
+NumPy 1.24.4 满足当前 PyTorch wheel 的 NumPy C API 要求。以下命令检查安装版本、Python 模块和基本 CUDA 运算。自动化脚本还会构建并执行一次 TensorRT GPU 推理。
+
+```bash
+python3 - <<'PY'
+import can
+import numpy as np
+import pygame
+import tensorrt
+import torch
+import yaml
+import zmq
+from scipy.spatial.transform import Rotation
+
+assert can.__version__ == "4.6.1"
+assert np.__version__ == "1.24.4"
+assert np.allclose(Rotation.identity().as_matrix(), np.eye(3))
+tensor = torch.arange(4, device="cuda", dtype=torch.float32)
+assert torch.equal(tensor.cpu(), torch.arange(4, dtype=torch.float32))
+print("PyTorch", torch.__version__)
+print("TensorRT", tensorrt.__version__)
+print("CUDA device", torch.cuda.get_device_name(0))
+PY
+```
+
+### 13. 配置 Jetson MAXN 电源模式
+
+在 AGX Orin 上选择 `mode 0`，使策略运行时可用 MAXN 的核心和频率上限。如果命令询问是否重启，输入 `YES`。重启后查询当前电源模式。
+
+```bash
+sudo /usr/sbin/nvpmodel -m 0
+```
+
+```bash
+sudo /usr/sbin/nvpmodel -q
+```
+
+预期显示 `NV Power Mode: MAXN` 和模式号 `0`。确认后继续安装常用工具。
 
 ---
 
 ## 三、安装常用工具
 
-本章保持既定常用工具配置的执行顺序。
+在运行环境安装完成的 Jetson 上，以 `ubuntu` 登录并按顺序配置 Git、mDNS 和 code-server。
 
 ### 1. 更新软件源
 
@@ -322,7 +651,7 @@ sudo apt update
 sudo apt install git
 ```
 
-Git 用于获取和管理项目代码。命令未使用 `-y`，APT 会按照原步骤要求交互确认。
+`git` 用于获取和管理机器人应用代码。电机工作空间首次构建时，CMake 也会用它获取项目指定版本的 spdlog。
 
 ### 3. 安装 mDNS 服务
 
@@ -338,16 +667,22 @@ Avahi 提供 `.local` 主机名解析。设备 hostname 为 `m00` 时，同一�
 
 ```bash
 mkdir -p /home/ubuntu/.config/code-server
+```
+
+```bash
 cat > /home/ubuntu/.config/code-server/config.yaml <<'EOF'
 bind-addr: 0.0.0.0:80
 auth: password
 password: 123
 cert: false
 EOF
+```
+
+```bash
 chmod 600 /home/ubuntu/.config/code-server/config.yaml
 ```
 
-直接写入 `config.yaml`，无需为 basic rootfs 额外安装 `vi`。
+这组命令直接生成 `config.yaml`，供 code-server 启动时读取。
 
 字段说明：
 
@@ -361,20 +696,10 @@ chmod 600 /home/ubuntu/.config/code-server/config.yaml
 
 ### 5. 安装 code-server
 
+在 Jetson 上运行 code-server 官方安装脚本。脚本会识别 Ubuntu 和 ARM64，安装当前发布的对应软件包。安装后可通过浏览器编辑代码和使用终端。 [code-server 官方安装说明](https://coder.com/docs/code-server/install#installsh)
+
 ```bash
 curl -fsSL https://code-server.dev/install.sh | sh
-```
-
-这条命令使用 code-server 官方安装脚本。它不是本仓库脚本，因此继续使用 code-server 官方源地址。
-
-如果该入口跳转到 `raw.githubusercontent.com` 后无法连接，或安装脚本下载 GitHub Release 超时，可以通过现有镜像通道下载同一份 ARM64 deb 安装。下面的版本为本次实机验证版本：
-
-```bash
-CODE_SERVER_VERSION=4.145.2
-curl -fL --retry 3 \
-  "https://gitwarp.canghai.org/github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_arm64.deb" \
-  -o /tmp/code-server.deb
-sudo apt install /tmp/code-server.deb
 ```
 
 ### 6. 为服务授予监听80端口的 capability
@@ -384,6 +709,9 @@ code-server 默认以当前用户运行，不能直接监听80端口。为当前
 
 ```bash
 sudo mkdir -p "/etc/systemd/system/code-server@${USER}.service.d"
+```
+
+```bash
 sudo tee "/etc/systemd/system/code-server@${USER}.service.d/override.conf" >/dev/null <<'EOF'
 [Service]
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -400,12 +728,17 @@ sudo systemctl daemon-reload
 
 ```bash
 sudo systemctl enable code-server@$USER
+```
+
+```bash
 sudo systemctl restart code-server@$USER
 ```
 
 - `enable`：设置开机自动启动。
 - `restart`：立即启动服务；如果服务已经运行，则重新创建进程以应用新的 capability。
 - `$USER`：使用当前登录用户的 systemd 实例，正常情况下为 `ubuntu`。
+
+用 `systemctl is-active code-server@$USER` 确认服务已运行，再从同一局域网用 Jetson 的 IP 或 `m00.local` 打开登录页。
 
 ---
 
@@ -443,10 +776,10 @@ curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotini
 ### 2. 进入 BSP 目录
 
 ```bash
-cd Linux_for_Tegra
+cd "$HOME/Linux_for_Tegra"
 ```
 
-这里必须进入与母机 Jetson Linux R36.5 完全匹配的 BSP 目录。后续备份镜像会写入当前 BSP 的 `tools/backup_restore/images/`。
+进入第一章准备的 R36.5.0 BSP 目录。后续备份镜像会写入该目录的 `tools/backup_restore/images/`。
 
 ### 3. 停止自动挂载服务
 
@@ -468,6 +801,12 @@ sudo service nfs-kernel-server start
 
 ### 5. 读取母机 NVMe
 
+确认母机已进入 Force Recovery，且刷机主机只连接这一台 Jetson。随后在刷机主机读取镜像。
+
+```bash
+lsusb | grep -i 'NVIDIA.*APX'
+```
+
 ```bash
 sudo ./tools/backup_restore/l4t_backup_restore.sh \
      --network usb0 \
@@ -475,8 +814,6 @@ sudo ./tools/backup_restore/l4t_backup_restore.sh \
      -b \
      jetson-agx-orin-devkit
 ```
-
-执行前，母机必须处于 Force Recovery，并且刷机主机只连接这一台需要备份的 Jetson。
 
 参数说明：
 
@@ -516,36 +853,52 @@ curl -fsSL https://gitwarp.canghai.org/raw.githubusercontent.com/chaeoi/robotini
 
 ### 7. 删除旧镜像并解包
 
-下面以 `goldimage_26072701` 为例。先确认 MD5 显示 `OK`，再删除 BSP 中原有的 `images/` 并解压备份：
+在刷机主机核对归档与对应的 MD5 文件。以下以 `goldimage_26072701` 为例。
 
 ```bash
 cd "$HOME/backup"
+```
 
+```bash
 md5sum -c goldimage_26072701.md5
+```
 
+看到 `OK` 后，确认下面指向本次使用的 BSP，再删除原有 `images/` 并解包。
+
+```bash
 sudo rm -rf /home/ubuntu/Linux_for_Tegra/tools/backup_restore/images
+```
 
+```bash
 sudo tar -xf goldimage_26072701.tar \
   -C /home/ubuntu/Linux_for_Tegra/tools/backup_restore
 ```
+
+解包后应在 BSP 的 `tools/backup_restore/images/` 下看到 `nvpartitionmap.txt` 和各分区镜像。
 
 ### 8. 刷写目标机 NVMe
 
 让目标 Jetson 进入 Force Recovery，确认刷机主机能够识别：
 
 ```bash
-lsusb | grep -i nvidia
+lsusb | grep -i 'NVIDIA.*APX'
 ```
 
 然后执行：
 
 ```bash
-cd /home/ubuntu/Linux_for_Tegra
+cd "$HOME/Linux_for_Tegra"
+```
 
+```bash
 sudo systemctl stop udisks2.service
+```
 
+```bash
 sudo service nfs-kernel-server start
+```
 
+```bash
 sudo ./tools/backup_restore/l4t_backup_restore.sh \
      --network usb0 \
      -e nvme0n1 \
@@ -604,18 +957,13 @@ R36.5 的扩容脚本由 `nvidia-l4t-oem-config` 包提供。它的 `--check` �
 
 ```bash
 sudo dpkg-reconfigure nvidia-l4t-bootloader
+```
+
+```bash
 sudo reboot
 ```
 
-本次实机从 36.5.0 回退状态恢复后，`Current version` 为 36.5.2，`Capsule update status` 为 `1`。状态含义见 [NVIDIA Bootloader 更新文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/Bootloader/UpdateAndRedundancy.html#manually-trigger-the-capsule-update)。
-
-### 10. 可选安装最小桌面
-
-```bash
-sudo apt install ubuntu-desktop-minimal
-```
-
-这是原步骤中的可选项。只有确实需要本地图形桌面时才执行；黄金母机追求无头和最小化时应跳过。
+实机记录中，恢复后最初从 36.5.0 bootloader 启动。重新应用已安装的固件并重启后，`Current version` 为 36.5.2，`Capsule update status` 为 `1`。 [NVIDIA Bootloader 更新文档](https://docs.nvidia.com/jetson/archives/r36.5/DeveloperGuide/SD/Bootloader/UpdateAndRedundancy.html#manually-trigger-the-capsule-update)
 
 ---
 
@@ -721,7 +1069,7 @@ sudo bash /tmp/rename.sh -u m04 -h m04
 
 ## 六、关键注意事项
 
-1. `Linux_for_Tegra` 必须与 Jetson Linux R36.5 完全匹配。
+1. 刷机、备份和恢复使用第一章准备的 R36.5.0 `Linux_for_Tegra`。
 2. `sanitize.sh` 执行关机后，母机不要再次正常启动，应直接进入 Recovery。
 3. backup_restore 的 `-e nvme0n1` 表示整块目标 NVMe，不是刷机主机自己的 NVMe。
 4. 恢复会覆盖目标机 NVMe 上的现有数据。
